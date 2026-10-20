@@ -50,7 +50,7 @@ export default function AuthForm({ mode }: { mode: "signup" | "login" }) {
   return (
     <div className="auth-card">
       <h1>{isSignup ? "Create your account" : "Welcome back"}</h1>
-      <p className="muted">
+      <p className="lead">
         {isSignup ? "Start buying and selling spare tickets." : "Log in to see the latest tickets."}
       </p>
       <form onSubmit={handleSubmit} className="stack">
@@ -76,7 +76,7 @@ export default function AuthForm({ mode }: { mode: "signup" | "login" }) {
             onChange={(e) => setPassword(e.target.value)}
             data-testid={isSignup ? "signup-password" : "login-password"}
           />
-          {isSignup && <small className="muted">At least 6 characters.</small>}
+          {isSignup && <span className="hint">At least 6 characters.</span>}
         </label>
         {error && (
           <p className="alert alert-error" role="alert">
@@ -97,7 +97,7 @@ export default function AuthForm({ mode }: { mode: "signup" | "login" }) {
           {loading ? "Please wait…" : isSignup ? "Sign up" : "Log in"}
         </button>
       </form>
-      <p className="muted center">
+      <p className="auth-switch">
         {isSignup ? (
           <>
             Already have an account? <Link href="/login">Log in</Link>

@@ -12,7 +12,7 @@ export default async function Header() {
     <header className="site-header">
       <div className="container header-inner">
         <Link href={user ? "/app" : "/"} className="brand">
-          Spare<span>Tix</span>
+          SpareTix
         </Link>
         <nav className="header-nav">
           {user ? (
@@ -21,7 +21,7 @@ export default async function Header() {
               <LogoutButton />
             </>
           ) : (
-            <Link href="/login" className="btn btn-ghost">
+            <Link href="/login" className="btn btn-secondary">
               Log in
             </Link>
           )}

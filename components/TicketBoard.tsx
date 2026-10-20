@@ -1,29 +1,48 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useId, useMemo, useRef, useState } from "react";
 import { createClient } from "@/lib/supabase/client";
+import TicketCard from "./TicketCard";
 
 type Category = "Events" | "Transport";
+
+type EventRow = {
+  id: string;
+  name: string;
+  event_date: string | null;
+  category: Category;
+  created_by: string | null;
+  created_at: string;
+};
 
 type Ticket = {
   id: string;
   user_id: string;
-  title: string;
-  category: Category;
+  event_id: string;
   price: number | null;
-  event_date: string | null;
+  paid_price: number | null;
   contact: string | null;
   sold: boolean;
   created_at: string;
 };
 
 type Tab = "All" | Category;
-type Sort = "soonest" | "cheapest";
 
 const priceFormat = new Intl.NumberFormat("en-IE", { style: "currency", currency: "EUR" });
+const wholePriceFormat = new Intl.NumberFormat("en-IE", {
+  style: "currency",
+  currency: "EUR",
+  maximumFractionDigits: 0,
+});
+
+// "€15" for whole euros, "€12.50" otherwise, so prices fit the ticket stub.
+function formatEuros(amount: number) {
+  const rounded = Math.round(amount * 100) / 100;
+  return Number.isInteger(rounded) ? wholePriceFormat.format(rounded) : priceFormat.format(rounded);
+}
 
 function formatPrice(price: number | null) {
-  return price === null ? "Ask seller" : priceFormat.format(price);
+  return price === null ? "Ask seller" : formatEuros(price);
 }
 
 function formatDate(date: string | null) {
@@ -37,75 +56,218 @@ function formatDate(date: string | null) {
   });
 }
 
-// Nulls always go last; ties fall back to newest first.
-function compareNullable<T extends number | string>(a: T | null, b: T | null) {
-  if (a === null && b === null) return 0;
-  if (a === null) return 1;
-  if (b === null) return -1;
-  return a < b ? -1 : a > b ? 1 : 0;
+// Today as YYYY-MM-DD in Madrid, the same day boundary post_ticket uses.
+function todayString() {
+  const parts = new Intl.DateTimeFormat("en-CA", {
+    timeZone: "Europe/Madrid",
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+  }).formatToParts(new Date());
+  const part = (type: string) => parts.find((p) => p.type === type)?.value ?? "";
+  return `${part("year")}-${part("month")}-${part("day")}`;
+}
+
+// Add fetched rows to what is already in state (a ticket may be posted before the first load ends).
+function mergeById<T extends { id: string }>(fetched: T[], current: T[]) {
+  const ids = new Set(fetched.map((row) => row.id));
+  return [...fetched, ...current.filter((row) => !ids.has(row.id))];
+}
+
+function toNumber(value: number | string | null) {
+  return value === null ? null : Number(value);
+}
+
+function parseAmount(value: string) {
+  if (value.trim() === "") return null;
+  const n = Number(value);
+  return Number.isFinite(n) && n >= 0 ? n : null;
+}
+
+// "3 tickets for sale, from €12, average €14.50", counting unsold priced tickets only.
+function summarize(tickets: Ticket[]) {
+  const unsold = tickets.filter((t) => !t.sold);
+  const count = `${unsold.length} ${unsold.length === 1 ? "ticket" : "tickets"} for sale`;
+  const prices = unsold.map((t) => toNumber(t.price)).filter((p): p is number => p !== null);
+  if (prices.length === 0) return count;
+  const min = Math.min(...prices);
+  const avg = prices.reduce((sum, p) => sum + p, 0) / prices.length;
+  return `${count}, from ${formatEuros(min)}, average ${formatEuros(avg)}`;
+}
+
+// Unsold first, then cheapest first (no price last), then newest.
+function compareTickets(a: Ticket, b: Ticket) {
+  if (a.sold !== b.sold) return a.sold ? 1 : -1;
+  const pa = toNumber(a.price);
+  const pb = toNumber(b.price);
+  if (pa !== pb) {
+    if (pa === null) return 1;
+    if (pb === null) return -1;
+    return pa - pb;
+  }
+  return b.created_at.localeCompare(a.created_at);
+}
+
+// Soonest date first, undated last, then newest.
+function compareEvents(a: EventRow, b: EventRow) {
+  if (a.event_date !== b.event_date) {
+    if (a.event_date === null) return 1;
+    if (b.event_date === null) return -1;
+    return a.event_date.localeCompare(b.event_date);
+  }
+  return b.created_at.localeCompare(a.created_at);
 }
 
 export default function TicketBoard({ userId }: { userId: string }) {
   const supabase = useMemo(() => createClient(), []);
+  const listboxId = useId();
+  const [events, setEvents] = useState<EventRow[]>([]);
   const [tickets, setTickets] = useState<Ticket[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
-  const [title, setTitle] = useState("");
-  const [category, setCategory] = useState<Category>("Events");
+  const [eventName, setEventName] = useState("");
+  const [pickedEventId, setPickedEventId] = useState<string | null>(null);
+  const [suggestOpen, setSuggestOpen] = useState(false);
+  const [activeIndex, setActiveIndex] = useState(-1);
   const [price, setPrice] = useState("");
-  const [eventDate, setEventDate] = useState("");
+  const [paidPrice, setPaidPrice] = useState("");
   const [contact, setContact] = useState("");
+  const [eventDate, setEventDate] = useState("");
+  const [category, setCategory] = useState<Category>("Events");
   const [saving, setSaving] = useState(false);
 
   const [tab, setTab] = useState<Tab>("All");
   const [search, setSearch] = useState("");
-  const [sort, setSort] = useState<Sort>("soonest");
+
+  // Drive the one-off slide-in and stamp animations.
+  const [newId, setNewId] = useState<string | null>(null);
+  const [justSoldId, setJustSoldId] = useState<string | null>(null);
+
+  // Clear an animation id once it has played, so remounts (tab switches) don't replay it.
+  function playOnce(set: (fn: (cur: string | null) => string | null) => void, id: string) {
+    set(() => id);
+    window.setTimeout(() => set((cur) => (cur === id ? null : cur)), 700);
+  }
+
+  // Keyboard focus to restore after a ticket moves or disappears.
+  const [focusTarget, setFocusTarget] = useState<string | null>(null);
+  const listHeadingRef = useRef<HTMLHeadingElement>(null);
+
+  const today = todayString();
 
   useEffect(() => {
-    supabase
-      .from("tickets")
-      .select("*")
-      .order("created_at", { ascending: false })
-      .then(({ data, error }) => {
-        if (error) setError(error.message);
-        else setTickets((data ?? []) as Ticket[]);
-        setLoading(false);
-      });
+    Promise.all([
+      supabase
+        .from("events")
+        .select("*")
+        .or(`event_date.is.null,event_date.gte.${todayString()}`)
+        .order("created_at", { ascending: false }),
+      supabase.from("tickets").select("*").order("created_at", { ascending: false }),
+    ]).then(([eventsRes, ticketsRes]) => {
+      const failed = eventsRes.error ?? ticketsRes.error;
+      if (failed) setError(failed.message);
+      else {
+        setEvents((prev) => mergeById((eventsRes.data ?? []) as EventRow[], prev));
+        setTickets((prev) => mergeById((ticketsRes.data ?? []) as Ticket[], prev));
+      }
+      setLoading(false);
+    });
   }, [supabase]);
+
+  useEffect(() => {
+    if (!focusTarget) return;
+    if (focusTarget === "list") listHeadingRef.current?.focus();
+    else document.getElementById(focusTarget)?.focus();
+    setFocusTarget(null);
+  }, [focusTarget]);
+
+  const upcomingEvents = useMemo(
+    () => events.filter((e) => e.event_date === null || e.event_date >= today).sort(compareEvents),
+    [events, today]
+  );
+
+  // The existing event this ticket will be added to, if any.
+  const typedName = eventName.trim().toLowerCase();
+  const matchedEvent = useMemo(() => {
+    const picked = upcomingEvents.find((e) => e.id === pickedEventId);
+    if (picked && picked.name.toLowerCase() === typedName) return picked;
+    return upcomingEvents.find((e) => e.name.trim().toLowerCase() === typedName) ?? null;
+  }, [upcomingEvents, pickedEventId, typedName]);
+
+  const suggestions = useMemo(() => {
+    if (!typedName) return [];
+    return upcomingEvents.filter((e) => e.name.toLowerCase().includes(typedName)).slice(0, 6);
+  }, [upcomingEvents, typedName]);
+
+  const showSuggestions = suggestOpen && suggestions.length > 0;
+
+  function pickSuggestion(event: EventRow) {
+    setEventName(event.name);
+    setPickedEventId(event.id);
+    setSuggestOpen(false);
+    setActiveIndex(-1);
+  }
+
+  function handleEventKeyDown(e: React.KeyboardEvent<HTMLInputElement>) {
+    if (!showSuggestions) {
+      if (e.key === "ArrowDown" && suggestions.length > 0) {
+        setSuggestOpen(true);
+        setActiveIndex(0);
+        e.preventDefault();
+      }
+      return;
+    }
+    if (e.key === "ArrowDown") {
+      setActiveIndex((i) => (i + 1) % suggestions.length);
+      e.preventDefault();
+    } else if (e.key === "ArrowUp") {
+      setActiveIndex((i) => (i <= 0 ? suggestions.length - 1 : i - 1));
+      e.preventDefault();
+    } else if (e.key === "Enter" && activeIndex >= 0) {
+      pickSuggestion(suggestions[activeIndex]);
+      e.preventDefault();
+    } else if (e.key === "Escape") {
+      setSuggestOpen(false);
+      setActiveIndex(-1);
+    }
+  }
 
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
-    const cleanTitle = title.trim();
-    if (!cleanTitle) return;
+    const name = eventName.trim();
+    if (!name) return;
     setSaving(true);
     setError(null);
+    setSuggestOpen(false);
 
-    const parsedPrice = price.trim() === "" ? null : Number(price);
-    const { data, error } = await supabase
-      .from("tickets")
-      .insert({
-        user_id: userId,
-        title: cleanTitle,
-        category,
-        price: parsedPrice !== null && Number.isFinite(parsedPrice) ? parsedPrice : null,
-        event_date: eventDate || null,
-        contact: contact.trim() || null,
-      })
-      .select()
-      .single();
+    const isNewEvent = matchedEvent === null;
+    const { data, error } = await supabase.rpc("post_ticket", {
+      p_event_name: name,
+      p_event_id: matchedEvent?.id ?? null,
+      p_event_date: isNewEvent && eventDate ? eventDate : null,
+      p_category: isNewEvent ? category : "Events",
+      p_price: parseAmount(price),
+      p_paid_price: parseAmount(paidPrice),
+      p_contact: contact.trim() || null,
+    });
 
     setSaving(false);
     if (error) {
       setError(error.message);
       return;
     }
-    setTickets((prev) => [data as Ticket, ...prev]);
-    setTitle("");
-    setCategory("Events");
+    const { event, ticket } = data as { event: EventRow; ticket: Ticket };
+    setEvents((prev) => (prev.some((x) => x.id === event.id) ? prev : [...prev, event]));
+    setTickets((prev) => [ticket, ...prev]);
+    playOnce(setNewId, ticket.id);
+    setEventName("");
+    setPickedEventId(null);
     setPrice("");
-    setEventDate("");
+    setPaidPrice("");
     setContact("");
+    setEventDate("");
+    setCategory("Events");
   }
 
   async function toggleSold(ticket: Ticket) {
@@ -116,90 +278,166 @@ export default function TicketBoard({ userId }: { userId: string }) {
       .select()
       .single();
     if (error) return setError(error.message);
+    if (!ticket.sold) playOnce(setJustSoldId, ticket.id);
     setTickets((prev) => prev.map((t) => (t.id === ticket.id ? (data as Ticket) : t)));
+    setFocusTarget(`toggle-${ticket.id}`);
   }
 
-  async function deleteTicket(ticket: Ticket) {
-    if (!window.confirm(`Delete "${ticket.title}"?`)) return;
+  async function deleteTicket(ticket: Ticket, name: string) {
+    if (!window.confirm(`Delete your ticket for "${name}"?`)) return;
     const { error } = await supabase.from("tickets").delete().eq("id", ticket.id);
     if (error) return setError(error.message);
     setTickets((prev) => prev.filter((t) => t.id !== ticket.id));
+    setFocusTarget("list");
   }
 
-  const visible = useMemo(() => {
+  // Upcoming events that have tickets, filtered by tab and search, each with its sorted tickets.
+  const groups = useMemo(() => {
     const q = search.trim().toLowerCase();
-    return tickets
-      .filter((t) => tab === "All" || t.category === tab)
-      .filter((t) => !q || t.title.toLowerCase().includes(q))
-      .sort((a, b) => {
-        if (a.sold !== b.sold) return a.sold ? 1 : -1;
-        const primary =
-          sort === "cheapest"
-            ? compareNullable(a.price === null ? null : Number(a.price), b.price === null ? null : Number(b.price))
-            : compareNullable(a.event_date, b.event_date);
-        return primary || b.created_at.localeCompare(a.created_at);
-      });
-  }, [tickets, tab, search, sort]);
+    return upcomingEvents
+      .filter((e) => tab === "All" || e.category === tab)
+      .filter((e) => !q || e.name.toLowerCase().includes(q))
+      .map((event) => ({
+        event,
+        tickets: tickets.filter((t) => t.event_id === event.id).sort(compareTickets),
+      }))
+      .filter((g) => g.tickets.length > 0);
+  }, [upcomingEvents, tickets, tab, search]);
+
+  const hasAnyListing = useMemo(
+    () => upcomingEvents.some((e) => tickets.some((t) => t.event_id === e.id)),
+    [upcomingEvents, tickets]
+  );
 
   return (
     <div className="board">
-      <p className="safety-note" role="note">
-        Only sell tickets that can be passed on. Check who you&apos;re buying from, meet in person if
-        you can, and check the ticket before paying.
-      </p>
-
-      <form onSubmit={handleSubmit} className="card ticket-form">
-        <h2>Sell a ticket</h2>
-        <label className="field">
-          <span>Title *</span>
-          <input
-            type="text"
-            required
-            maxLength={140}
-            value={title}
-            onChange={(e) => setTitle(e.target.value)}
-            placeholder="e.g. Thursday party at Kapital, 1 ticket"
-            data-testid="core-input"
-          />
+      <form onSubmit={handleSubmit} className="sell-form">
+        <h1 className="sell-heading">Sell a ticket</h1>
+        <label htmlFor="event-name" className="label">
+          Which event?
         </label>
-        <div className="form-grid">
-          <label className="field">
-            <span>Category</span>
-            <select value={category} onChange={(e) => setCategory(e.target.value as Category)}>
-              <option value="Events">Events</option>
-              <option value="Transport">Transport</option>
-            </select>
-          </label>
-          <label className="field">
-            <span>Price (€)</span>
+        <div className="sell-row">
+          <div className="combo">
             <input
-              type="number"
-              inputMode="decimal"
-              min="0"
-              step="0.01"
-              value={price}
-              onChange={(e) => setPrice(e.target.value)}
-              placeholder="Optional"
-            />
-          </label>
-          <label className="field">
-            <span>Date</span>
-            <input type="date" value={eventDate} onChange={(e) => setEventDate(e.target.value)} />
-          </label>
-          <label className="field">
-            <span>How to reach you</span>
-            <input
+              id="event-name"
               type="text"
+              required
               maxLength={140}
-              value={contact}
-              onChange={(e) => setContact(e.target.value)}
-              placeholder="e.g. Instagram @yourname"
+              autoComplete="off"
+              role="combobox"
+              aria-autocomplete="list"
+              aria-expanded={showSuggestions}
+              aria-controls={listboxId}
+              aria-activedescendant={
+                showSuggestions && activeIndex >= 0 ? `${listboxId}-${activeIndex}` : undefined
+              }
+              value={eventName}
+              onChange={(e) => {
+                setEventName(e.target.value);
+                setPickedEventId(null);
+                setSuggestOpen(true);
+                setActiveIndex(-1);
+              }}
+              onFocus={() => setSuggestOpen(true)}
+              onBlur={() => {
+                setSuggestOpen(false);
+                setActiveIndex(-1);
+              }}
+              onKeyDown={handleEventKeyDown}
+              placeholder="e.g. Thursday party at Kapital"
+              data-testid="core-input"
             />
-          </label>
+            <ul
+              id={listboxId}
+              role="listbox"
+              aria-label="Upcoming events"
+              className="suggestions"
+              hidden={!showSuggestions}
+            >
+              {suggestions.map((s, i) => (
+                <li
+                  key={s.id}
+                  id={`${listboxId}-${i}`}
+                  role="option"
+                  aria-selected={i === activeIndex}
+                  className={`suggestion ${i === activeIndex ? "suggestion-active" : ""}`}
+                  // Keep focus in the input so the click lands before blur closes the list.
+                  onMouseDown={(e) => e.preventDefault()}
+                  onClick={() => pickSuggestion(s)}
+                >
+                  <span className="suggestion-name">{s.name}</span>
+                  <span>{formatDate(s.event_date)}</span>
+                </li>
+              ))}
+            </ul>
+          </div>
+          <button type="submit" className="btn btn-primary" disabled={saving} data-testid="core-submit">
+            {saving ? "Posting…" : "Post ticket"}
+          </button>
         </div>
-        <button type="submit" className="btn btn-primary btn-block" disabled={saving} data-testid="core-submit">
-          {saving ? "Posting…" : "Post ticket"}
-        </button>
+        <p className="match-note" role="status">
+          {matchedEvent ? `Adding to ${matchedEvent.name}, ${formatDate(matchedEvent.event_date)}.` : ""}
+        </p>
+
+        <details className="details">
+          <summary>Add details</summary>
+          <div className="form-grid">
+            <label className="field">
+              <span className="label">Price (€)</span>
+              <input
+                type="number"
+                inputMode="decimal"
+                min="0"
+                step="0.01"
+                value={price}
+                onChange={(e) => setPrice(e.target.value)}
+                placeholder="Optional"
+              />
+            </label>
+            <label className="field">
+              <span className="label">What you paid (€)</span>
+              <input
+                type="number"
+                inputMode="decimal"
+                min="0"
+                step="0.01"
+                value={paidPrice}
+                onChange={(e) => setPaidPrice(e.target.value)}
+                placeholder="Optional"
+              />
+            </label>
+            <label className="field field-wide">
+              <span className="label">How to reach you</span>
+              <input
+                type="text"
+                maxLength={140}
+                value={contact}
+                onChange={(e) => setContact(e.target.value)}
+                placeholder="e.g. Instagram @yourname"
+              />
+            </label>
+            {!matchedEvent && (
+              <>
+                <label className="field">
+                  <span className="label">Event date</span>
+                  <input type="date" min={today} value={eventDate} onChange={(e) => setEventDate(e.target.value)} />
+                </label>
+                <label className="field">
+                  <span className="label">Category</span>
+                  <select value={category} onChange={(e) => setCategory(e.target.value as Category)}>
+                    <option value="Events">Events</option>
+                    <option value="Transport">Transport</option>
+                  </select>
+                </label>
+              </>
+            )}
+          </div>
+        </details>
+
+        <p className="safety-note" role="note">
+          Only sell tickets that can be passed on. Check who you&apos;re buying from, meet in person if
+          you can, and check the ticket before paying.
+        </p>
       </form>
 
       {error && (
@@ -208,15 +446,17 @@ export default function TicketBoard({ userId }: { userId: string }) {
         </p>
       )}
 
-      <section aria-label="Tickets for sale">
+      <section aria-labelledby="listings-heading" className="listings">
+        <h2 id="listings-heading" className="visually-hidden" tabIndex={-1} ref={listHeadingRef}>
+          Tickets for sale
+        </h2>
         <div className="toolbar">
-          <div className="tabs" role="tablist" aria-label="Filter by category">
+          <div className="tabs" role="group" aria-label="Filter by category">
             {(["All", "Events", "Transport"] as Tab[]).map((t) => (
               <button
                 key={t}
                 type="button"
-                role="tab"
-                aria-selected={tab === t}
+                aria-pressed={tab === t}
                 className={`tab ${tab === t ? "tab-active" : ""}`}
                 onClick={() => setTab(t)}
               >
@@ -224,65 +464,88 @@ export default function TicketBoard({ userId }: { userId: string }) {
               </button>
             ))}
           </div>
-          <div className="toolbar-row">
+          <label className="field toolbar-search">
+            <span className="label">Search events</span>
             <input
               type="search"
-              className="search"
-              placeholder="Search by title"
-              aria-label="Search tickets by title"
+              placeholder="Search by event name"
               value={search}
               onChange={(e) => setSearch(e.target.value)}
             />
-            <select aria-label="Sort tickets" value={sort} onChange={(e) => setSort(e.target.value as Sort)}>
-              <option value="soonest">Soonest first</option>
-              <option value="cheapest">Cheapest first</option>
-            </select>
-          </div>
+          </label>
         </div>
 
-        {loading ? (
-          <p className="muted center">Loading tickets…</p>
-        ) : visible.length === 0 ? (
-          <p className="muted center empty">
-            {tickets.length === 0 ? "No tickets yet. Be the first to post one!" : "No tickets match your filters."}
-          </p>
-        ) : (
-          <ul className="ticket-list">
-            {visible.map((t) => {
-              const mine = t.user_id === userId;
-              return (
-                <li key={t.id} className={`card ticket ${t.sold ? "ticket-sold" : ""}`} data-testid="core-item">
-                  <div className="ticket-main">
-                    <div className="ticket-head">
-                      <h3 className="ticket-title">{t.title}</h3>
-                      <span className="ticket-price">{formatPrice(t.price === null ? null : Number(t.price))}</span>
-                    </div>
-                    <div className="ticket-meta">
-                      <span className="badge">{t.category}</span>
-                      {t.sold && <span className="badge badge-sold">Sold</span>}
-                      {mine && <span className="badge badge-mine">Your ticket</span>}
-                      <span>{formatDate(t.event_date)}</span>
-                    </div>
-                    {t.contact && (
-                      <p className="ticket-contact">
-                        <span className="muted">Contact:</span> {t.contact}
-                      </p>
-                    )}
+        <p className="status-text" role="status">
+          {loading
+            ? "Loading tickets…"
+            : groups.length === 0
+              ? hasAnyListing
+                ? "No events match your filters."
+                : "No tickets yet. Post the first one."
+              : ""}
+        </p>
+        {groups.length > 0 && (
+          <div className="event-list">
+            {groups.map(({ event, tickets: eventTickets }) => (
+              <section key={event.id} className="event" aria-labelledby={`event-${event.id}`}>
+                <header className="event-header">
+                  <h3 id={`event-${event.id}`} className="event-name">
+                    {event.name}
+                  </h3>
+                  <div className="event-meta">
+                    <span className="tag">{event.category}</span>
+                    <span>{formatDate(event.event_date)}</span>
                   </div>
-                  {mine && (
-                    <div className="ticket-actions">
-                      <button type="button" className="btn btn-ghost btn-sm" onClick={() => toggleSold(t)}>
-                        {t.sold ? "Mark as available" : "Mark as sold"}
-                      </button>
-                      <button type="button" className="btn btn-danger btn-sm" onClick={() => deleteTicket(t)}>
-                        Delete
-                      </button>
-                    </div>
-                  )}
-                </li>
-              );
-            })}
-          </ul>
+                  <p className="event-summary">{summarize(eventTickets)}</p>
+                </header>
+                <ul className="ticket-list">
+                  {eventTickets.map((t) => {
+                    const mine = t.user_id === userId;
+                    const paid = toNumber(t.paid_price);
+                    return (
+                      <TicketCard
+                        key={t.id}
+                        testId="core-item"
+                        headingLevel={null}
+                        title={event.name}
+                        price={formatPrice(toNumber(t.price))}
+                        sold={t.sold}
+                        isNew={t.id === newId}
+                        justSold={t.id === justSoldId}
+                        meta={
+                          <>
+                            {mine && <span className="tag">Your ticket</span>}
+                            {paid !== null && <span>Seller paid {formatEuros(paid)}</span>}
+                          </>
+                        }
+                      >
+                        {t.contact && <p className="ticket-contact">Contact: {t.contact}</p>}
+                        {mine && (
+                          <div className="ticket-actions">
+                            <button
+                              type="button"
+                              id={`toggle-${t.id}`}
+                              className="btn btn-secondary"
+                              onClick={() => toggleSold(t)}
+                            >
+                              {t.sold ? "Mark as available" : "Mark as sold"}
+                            </button>
+                            <button
+                              type="button"
+                              className="btn btn-secondary"
+                              onClick={() => deleteTicket(t, event.name)}
+                            >
+                              Delete
+                            </button>
+                          </div>
+                        )}
+                      </TicketCard>
+                    );
+                  })}
+                </ul>
+              </section>
+            ))}
+          </div>
         )}
       </section>
     </div>
