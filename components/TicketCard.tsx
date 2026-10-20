@@ -1,7 +1,7 @@
 import type { ReactNode } from "react";
 
 type TicketCardProps = {
-  title: string;
+  title: ReactNode;
   price: string;
   priceLabel?: string;
   meta?: ReactNode;
@@ -12,6 +12,8 @@ type TicketCardProps = {
   as?: "li" | "div";
   // null renders the title as plain text (the event heading already names it).
   headingLevel?: 2 | 3 | null;
+  // "small" shows the title as plain body text instead of the display font.
+  titleSize?: "display" | "small";
   testId?: string;
 };
 
@@ -27,6 +29,7 @@ export default function TicketCard({
   children,
   as: Tag = "li",
   headingLevel = 2,
+  titleSize = "display",
   testId,
 }: TicketCardProps) {
   const classes = ["ticket", sold && "ticket-sold", isNew && "ticket-new"].filter(Boolean).join(" ");
@@ -35,7 +38,7 @@ export default function TicketCard({
   return (
     <Tag className={classes} data-testid={testId}>
       <div className="ticket-main">
-        <Heading className="ticket-title">{title}</Heading>
+        <Heading className={titleSize === "small" ? "ticket-title-small" : "ticket-title"}>{title}</Heading>
         {meta && <div className="ticket-meta">{meta}</div>}
         {children}
       </div>

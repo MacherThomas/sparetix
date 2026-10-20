@@ -16,10 +16,7 @@ export default async function Header() {
         </Link>
         <nav className="header-nav">
           {user ? (
-            <>
-              <span className="header-email">{user.email}</span>
-              <LogoutButton />
-            </>
+            <LogoutButton />
           ) : (
             <Link href="/login" className="btn btn-secondary">
               Log in

@@ -1,4 +1,4 @@
--- SpareTix database schema: events and their tickets.
+-- SpareTix database schema: events, their tickets, and "looking for" requests.
 -- Paste into Supabase: Dashboard → SQL Editor → New query → Run.
 --
 -- Works on a fresh project and on the old single-table schema: it moves every
@@ -177,28 +177,61 @@ create policy "Users can delete their own tickets"
   using (auth.uid() = user_id);
 
 -- ---------------------------------------------------------------------------
--- post_ticket: add a ticket to the upcoming event with this name, or create
--- the event first. Runs with the caller's rights, so all policies above apply.
+-- "Looking for" requests: one per user per event.
 -- ---------------------------------------------------------------------------
-create or replace function public.post_ticket(
+create table if not exists public.requests (
+  id          uuid primary key default gen_random_uuid(),
+  event_id    uuid not null references public.events (id) on delete restrict,
+  user_id     uuid not null default auth.uid() references auth.users (id) on delete cascade,
+  contact     text check (contact is null or char_length(contact) <= 140),
+  created_at  timestamptz not null default now()
+);
+
+create unique index if not exists requests_event_user_key on public.requests (event_id, user_id);
+
+alter table public.requests enable row level security;
+revoke all on public.requests from anon;
+revoke all on public.requests from authenticated;
+grant select, insert, delete on public.requests to authenticated;
+
+drop policy if exists "Logged-in users can read all requests" on public.requests;
+create policy "Logged-in users can read all requests"
+  on public.requests for select
+  to authenticated
+  using (auth.uid() is not null);
+
+drop policy if exists "Users can insert their own requests" on public.requests;
+create policy "Users can insert their own requests"
+  on public.requests for insert
+  to authenticated
+  with check (auth.uid() = user_id);
+
+drop policy if exists "Users can delete their own requests" on public.requests;
+create policy "Users can delete their own requests"
+  on public.requests for delete
+  to authenticated
+  using (auth.uid() = user_id);
+
+-- ---------------------------------------------------------------------------
+-- find_or_create_event: the upcoming event with this name, or a new one.
+-- Shared by post_ticket and post_request. Runs with the caller's rights, so
+-- all policies above apply.
+-- ---------------------------------------------------------------------------
+create or replace function public.find_or_create_event(
   p_event_name text,
-  p_event_id   uuid    default null,
-  p_event_date date    default null,
-  p_category   text    default 'Events',
-  p_price      numeric default null,
-  p_paid_price numeric default null,
-  p_contact    text    default null
+  p_event_id   uuid default null,
+  p_event_date date default null,
+  p_category   text default 'Events'
 )
-returns jsonb
+returns public.events
 language plpgsql
 security invoker
 set search_path = public
 as $$
 declare
-  v_name     text := btrim(coalesce(p_event_name, ''));
-  v_today    date := (now() at time zone 'Europe/Madrid')::date;
-  v_event    public.events;
-  v_ticket   public.tickets;
+  v_name   text := btrim(coalesce(p_event_name, ''));
+  v_today  date := (now() at time zone 'Europe/Madrid')::date;
+  v_event  public.events;
 begin
   if auth.uid() is null then
     raise exception 'You need to be logged in.' using errcode = '42501';
@@ -240,6 +273,33 @@ begin
     end if;
   end if;
 
+  return v_event;
+end;
+$$;
+
+-- ---------------------------------------------------------------------------
+-- post_ticket: add a ticket to the event (created if needed).
+-- ---------------------------------------------------------------------------
+create or replace function public.post_ticket(
+  p_event_name text,
+  p_event_id   uuid    default null,
+  p_event_date date    default null,
+  p_category   text    default 'Events',
+  p_price      numeric default null,
+  p_paid_price numeric default null,
+  p_contact    text    default null
+)
+returns jsonb
+language plpgsql
+security invoker
+set search_path = public
+as $$
+declare
+  v_event   public.events;
+  v_ticket  public.tickets;
+begin
+  v_event := public.find_or_create_event(p_event_name, p_event_id, p_event_date, p_category);
+
   insert into public.tickets (user_id, event_id, price, paid_price, contact)
   values (auth.uid(), v_event.id, p_price, p_paid_price, nullif(btrim(p_contact), ''))
   returning * into v_ticket;
@@ -248,10 +308,52 @@ begin
 end;
 $$;
 
+-- ---------------------------------------------------------------------------
+-- post_request: say you're looking for a ticket for the event (created if
+-- needed). Asking twice for the same event keeps the first request.
+-- ---------------------------------------------------------------------------
+create or replace function public.post_request(
+  p_event_name text,
+  p_event_id   uuid default null,
+  p_event_date date default null,
+  p_category   text default 'Events',
+  p_contact    text default null
+)
+returns jsonb
+language plpgsql
+security invoker
+set search_path = public
+as $$
+declare
+  v_event    public.events;
+  v_request  public.requests;
+  v_created  boolean := true;
+begin
+  v_event := public.find_or_create_event(p_event_name, p_event_id, p_event_date, p_category);
+
+  insert into public.requests (user_id, event_id, contact)
+  values (auth.uid(), v_event.id, nullif(btrim(p_contact), ''))
+  on conflict (event_id, user_id) do nothing
+  returning * into v_request;
+
+  if v_request.id is null then
+    v_created := false;
+    select * into v_request from public.requests
+    where event_id = v_event.id and user_id = auth.uid();
+  end if;
+
+  return jsonb_build_object('event', to_jsonb(v_event), 'request', to_jsonb(v_request), 'created', v_created);
+end;
+$$;
+
+revoke all on function public.find_or_create_event(text, uuid, date, text) from public, anon;
+grant execute on function public.find_or_create_event(text, uuid, date, text) to authenticated;
 revoke all on function public.post_ticket(text, uuid, date, text, numeric, numeric, text) from public, anon;
 grant execute on function public.post_ticket(text, uuid, date, text, numeric, numeric, text) to authenticated;
+revoke all on function public.post_request(text, uuid, date, text, text) from public, anon;
+grant execute on function public.post_request(text, uuid, date, text, text) to authenticated;
 
 commit;
 
--- Make the API pick up the new table and function right away.
+-- Make the API pick up the new tables and functions right away.
 notify pgrst, 'reload schema';

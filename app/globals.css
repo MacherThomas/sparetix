@@ -40,7 +40,8 @@ a {
 
 h1,
 h2,
-h3 {
+h3,
+h4 {
   line-height: 1.15;
   margin: 0;
 }
@@ -106,19 +107,6 @@ main.container {
   min-width: 0;
 }
 
-.header-email {
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  max-width: 240px;
-}
-
-@media (max-width: 560px) {
-  .header-email {
-    display: none;
-  }
-}
-
 /* Buttons */
 .btn {
   display: inline-flex;
@@ -159,6 +147,21 @@ main.container {
 
 .btn-secondary:hover:not(:disabled) {
   text-decoration: underline;
+}
+
+/* Low-emphasis action: looks like a link, still a 44px tap target. */
+.btn-text {
+  background: transparent;
+  color: var(--ink);
+  font-weight: 400;
+  text-decoration: underline;
+  text-underline-offset: 3px;
+  padding-left: 8px;
+  padding-right: 8px;
+}
+
+.btn-text:hover:not(:disabled) {
+  text-decoration-thickness: 2px;
 }
 
 .btn-lg {
@@ -262,6 +265,11 @@ input::placeholder {
   overflow-wrap: anywhere;
 }
 
+.ticket-title-small {
+  font-weight: 600;
+  overflow-wrap: anywhere;
+}
+
 .ticket-meta {
   display: flex;
   flex-wrap: wrap;
@@ -283,6 +291,7 @@ input::placeholder {
 .ticket-actions {
   display: flex;
   flex-wrap: wrap;
+  align-items: center;
   gap: 8px;
   margin-top: 4px;
 }
@@ -290,6 +299,12 @@ input::placeholder {
 .ticket-actions .btn {
   white-space: normal;
   padding: 8px 12px;
+}
+
+/* Delete: smaller and quieter than "Mark as sold", still a 44px tap target. */
+.ticket-actions .btn-text {
+  padding: 8px;
+  font-size: 0.875rem;
 }
 
 .ticket-stub {
@@ -396,12 +411,34 @@ input::placeholder {
 }
 
 /* Landing */
+.landing {
+  display: flex;
+  flex-direction: column;
+  gap: 40px;
+}
+
 .hero {
+  display: flex;
+  flex-direction: column;
+  gap: 34px;
+}
+
+.hero-text {
   max-width: 600px;
   display: flex;
   flex-direction: column;
   align-items: flex-start;
   gap: 18px;
+}
+
+/* Wide screens: example ticket beside the headline, visible without scrolling. */
+@media (min-width: 901px) {
+  .hero {
+    display: grid;
+    grid-template-columns: minmax(0, 1.25fr) minmax(0, 1fr);
+    align-items: center;
+    gap: 48px;
+  }
 }
 
 .eyebrow {
@@ -424,13 +461,14 @@ input::placeholder {
 .example {
   width: 100%;
   max-width: 440px;
-  margin: 34px 0 0;
+  margin: 0;
 }
 
 .features {
   width: 100%;
+  max-width: 600px;
   list-style: none;
-  margin: 24px 0 0;
+  margin: 0;
   padding: 0;
 }
 
@@ -539,8 +577,9 @@ input::placeholder {
   font-weight: 600;
 }
 
+/* Empty live regions stay in the accessibility tree (so updates are announced) but take no space. */
 .match-note:empty {
-  display: none;
+  margin-top: -8px;
 }
 
 .field-wide {
@@ -694,7 +733,122 @@ input::placeholder {
   font-weight: 600;
 }
 
-/* The event name heads the group, so ticket titles inside it can be quieter. */
-.event .ticket-title {
-  font-size: 1.375rem;
+/* Sell area: the sell form, then the "Looking for a ticket instead?" link and form */
+.sell-area {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.price-hint {
+  font-weight: 400;
+}
+
+.request-toggle .btn-text {
+  padding-left: 0;
+}
+
+.request-form {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  max-width: 640px;
+  padding-top: 16px;
+  border-top: 2px dotted var(--perforation);
+}
+
+.request-heading {
+  font-size: 1.25rem;
+  font-weight: 700;
+  margin-bottom: 4px;
+}
+
+/* Time sections: Today, This week, Later, Date not set */
+.time-section {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-bottom: 48px;
+}
+
+.time-heading {
+  font-size: 1.25rem;
+  font-weight: 700;
+}
+
+.time-section-today {
+  padding-top: 12px;
+  border-top: 4px solid var(--ink);
+}
+
+.time-section-today .time-heading {
+  align-self: flex-start;
+  padding: 4px 14px;
+  border: 2px solid var(--ink);
+  border-radius: 999px;
+  background: var(--ticket);
+}
+
+/* "I'm looking for one" */
+.looking {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px 12px;
+  margin-top: 6px;
+}
+
+.looking-on {
+  background: var(--ticket);
+  text-decoration: underline;
+  text-decoration-thickness: 3px;
+  text-underline-offset: 5px;
+}
+
+.looking-contact {
+  max-width: 360px;
+}
+
+.looking-contacts summary {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 44px;
+  font-weight: 600;
+  cursor: pointer;
+  list-style: none;
+}
+
+.looking-contacts summary::-webkit-details-marker {
+  display: none;
+}
+
+.looking-contacts summary::before {
+  content: "+";
+  display: inline-block;
+  width: 1ch;
+  font-weight: 700;
+}
+
+.looking-contacts[open] summary::before {
+  content: "\2212";
+}
+
+.looking-status {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.looking-contacts ul {
+  margin: 0;
+  padding-left: 20px;
+}
+
+.looking-contacts li {
+  overflow-wrap: anywhere;
+}
+
+.looking .btn-text {
+  padding-left: 0;
+  padding-right: 0;
 }

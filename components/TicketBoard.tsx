@@ -1,141 +1,57 @@
 "use client";
 
-import { useEffect, useId, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { createClient } from "@/lib/supabase/client";
+import EventNameField from "./EventNameField";
+import RequestForm from "./RequestForm";
 import TicketCard from "./TicketCard";
-
-type Category = "Events" | "Transport";
-
-type EventRow = {
-  id: string;
-  name: string;
-  event_date: string | null;
-  category: Category;
-  created_by: string | null;
-  created_at: string;
-};
-
-type Ticket = {
-  id: string;
-  user_id: string;
-  event_id: string;
-  price: number | null;
-  paid_price: number | null;
-  contact: string | null;
-  sold: boolean;
-  created_at: string;
-};
+import {
+  TIME_SECTIONS,
+  compareEvents,
+  compareTickets,
+  endOfWeek,
+  formatDate,
+  formatEuros,
+  formatPrice,
+  matchEvent,
+  mergeById,
+  parseAmount,
+  peopleLooking,
+  priceHint,
+  summarizeTickets,
+  timeSection,
+  toNumber,
+  todayString,
+  type Category,
+  type EventRow,
+  type RequestRow,
+  type Ticket,
+} from "@/lib/listings";
 
 type Tab = "All" | Category;
 
-const priceFormat = new Intl.NumberFormat("en-IE", { style: "currency", currency: "EUR" });
-const wholePriceFormat = new Intl.NumberFormat("en-IE", {
-  style: "currency",
-  currency: "EUR",
-  maximumFractionDigits: 0,
-});
-
-// "€15" for whole euros, "€12.50" otherwise, so prices fit the ticket stub.
-function formatEuros(amount: number) {
-  const rounded = Math.round(amount * 100) / 100;
-  return Number.isInteger(rounded) ? wholePriceFormat.format(rounded) : priceFormat.format(rounded);
-}
-
-function formatPrice(price: number | null) {
-  return price === null ? "Ask seller" : formatEuros(price);
-}
-
-function formatDate(date: string | null) {
-  if (!date) return "Date not set";
-  const [y, m, d] = date.split("-").map(Number);
-  return new Date(y, m - 1, d).toLocaleDateString("en-GB", {
-    weekday: "short",
-    day: "numeric",
-    month: "short",
-    year: "numeric",
-  });
-}
-
-// Today as YYYY-MM-DD in Madrid, the same day boundary post_ticket uses.
-function todayString() {
-  const parts = new Intl.DateTimeFormat("en-CA", {
-    timeZone: "Europe/Madrid",
-    year: "numeric",
-    month: "2-digit",
-    day: "2-digit",
-  }).formatToParts(new Date());
-  const part = (type: string) => parts.find((p) => p.type === type)?.value ?? "";
-  return `${part("year")}-${part("month")}-${part("day")}`;
-}
-
-// Add fetched rows to what is already in state (a ticket may be posted before the first load ends).
-function mergeById<T extends { id: string }>(fetched: T[], current: T[]) {
-  const ids = new Set(fetched.map((row) => row.id));
-  return [...fetched, ...current.filter((row) => !ids.has(row.id))];
-}
-
-function toNumber(value: number | string | null) {
-  return value === null ? null : Number(value);
-}
-
-function parseAmount(value: string) {
-  if (value.trim() === "") return null;
-  const n = Number(value);
-  return Number.isFinite(n) && n >= 0 ? n : null;
-}
-
-// "3 tickets for sale, from €12, average €14.50", counting unsold priced tickets only.
-function summarize(tickets: Ticket[]) {
-  const unsold = tickets.filter((t) => !t.sold);
-  const count = `${unsold.length} ${unsold.length === 1 ? "ticket" : "tickets"} for sale`;
-  const prices = unsold.map((t) => toNumber(t.price)).filter((p): p is number => p !== null);
-  if (prices.length === 0) return count;
-  const min = Math.min(...prices);
-  const avg = prices.reduce((sum, p) => sum + p, 0) / prices.length;
-  return `${count}, from ${formatEuros(min)}, average ${formatEuros(avg)}`;
-}
-
-// Unsold first, then cheapest first (no price last), then newest.
-function compareTickets(a: Ticket, b: Ticket) {
-  if (a.sold !== b.sold) return a.sold ? 1 : -1;
-  const pa = toNumber(a.price);
-  const pb = toNumber(b.price);
-  if (pa !== pb) {
-    if (pa === null) return 1;
-    if (pb === null) return -1;
-    return pa - pb;
-  }
-  return b.created_at.localeCompare(a.created_at);
-}
-
-// Soonest date first, undated last, then newest.
-function compareEvents(a: EventRow, b: EventRow) {
-  if (a.event_date !== b.event_date) {
-    if (a.event_date === null) return 1;
-    if (b.event_date === null) return -1;
-    return a.event_date.localeCompare(b.event_date);
-  }
-  return b.created_at.localeCompare(a.created_at);
-}
-
 export default function TicketBoard({ userId }: { userId: string }) {
   const supabase = useMemo(() => createClient(), []);
-  const listboxId = useId();
   const [events, setEvents] = useState<EventRow[]>([]);
   const [tickets, setTickets] = useState<Ticket[]>([]);
+  const [requests, setRequests] = useState<RequestRow[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
   const [eventName, setEventName] = useState("");
   const [pickedEventId, setPickedEventId] = useState<string | null>(null);
-  const [suggestOpen, setSuggestOpen] = useState(false);
-  const [activeIndex, setActiveIndex] = useState(-1);
   const [price, setPrice] = useState("");
   const [paidPrice, setPaidPrice] = useState("");
   const [contact, setContact] = useState("");
   const [eventDate, setEventDate] = useState("");
   const [category, setCategory] = useState<Category>("Events");
   const [saving, setSaving] = useState(false);
+
+  const [requestFormOpen, setRequestFormOpen] = useState(false);
+  // Per-event "I'm looking for one": optional contact typed before clicking, and pending clicks.
+  const [lookingContact, setLookingContact] = useState<Record<string, string>>({});
+  const [contactOpenFor, setContactOpenFor] = useState<string | null>(null);
+  const [pendingLooking, setPendingLooking] = useState<Set<string>>(new Set());
 
   const [tab, setTab] = useState<Tab>("All");
   const [search, setSearch] = useState("");
@@ -155,6 +71,7 @@ export default function TicketBoard({ userId }: { userId: string }) {
   const listHeadingRef = useRef<HTMLHeadingElement>(null);
 
   const today = todayString();
+  const weekEnd = endOfWeek(today);
 
   useEffect(() => {
     Promise.all([
@@ -164,12 +81,16 @@ export default function TicketBoard({ userId }: { userId: string }) {
         .or(`event_date.is.null,event_date.gte.${todayString()}`)
         .order("created_at", { ascending: false }),
       supabase.from("tickets").select("*").order("created_at", { ascending: false }),
-    ]).then(([eventsRes, ticketsRes]) => {
+      supabase.from("requests").select("*").order("created_at", { ascending: false }),
+    ]).then(([eventsRes, ticketsRes, requestsRes]) => {
       const failed = eventsRes.error ?? ticketsRes.error;
       if (failed) setError(failed.message);
       else {
         setEvents((prev) => mergeById((eventsRes.data ?? []) as EventRow[], prev));
         setTickets((prev) => mergeById((ticketsRes.data ?? []) as Ticket[], prev));
+        // Requests are extra: if they fail to load, tickets still work.
+        if (requestsRes.error) setError(`Couldn't load "looking for" requests: ${requestsRes.error.message}`);
+        else setRequests((prev) => mergeById((requestsRes.data ?? []) as RequestRow[], prev));
       }
       setLoading(false);
     });
@@ -188,49 +109,14 @@ export default function TicketBoard({ userId }: { userId: string }) {
   );
 
   // The existing event this ticket will be added to, if any.
-  const typedName = eventName.trim().toLowerCase();
-  const matchedEvent = useMemo(() => {
-    const picked = upcomingEvents.find((e) => e.id === pickedEventId);
-    if (picked && picked.name.toLowerCase() === typedName) return picked;
-    return upcomingEvents.find((e) => e.name.trim().toLowerCase() === typedName) ?? null;
-  }, [upcomingEvents, pickedEventId, typedName]);
+  const matchedEvent = matchEvent(upcomingEvents, eventName, pickedEventId);
+  const matchedTickets = useMemo(
+    () => (matchedEvent ? tickets.filter((t) => t.event_id === matchedEvent.id) : []),
+    [matchedEvent, tickets]
+  );
 
-  const suggestions = useMemo(() => {
-    if (!typedName) return [];
-    return upcomingEvents.filter((e) => e.name.toLowerCase().includes(typedName)).slice(0, 6);
-  }, [upcomingEvents, typedName]);
-
-  const showSuggestions = suggestOpen && suggestions.length > 0;
-
-  function pickSuggestion(event: EventRow) {
-    setEventName(event.name);
-    setPickedEventId(event.id);
-    setSuggestOpen(false);
-    setActiveIndex(-1);
-  }
-
-  function handleEventKeyDown(e: React.KeyboardEvent<HTMLInputElement>) {
-    if (!showSuggestions) {
-      if (e.key === "ArrowDown" && suggestions.length > 0) {
-        setSuggestOpen(true);
-        setActiveIndex(0);
-        e.preventDefault();
-      }
-      return;
-    }
-    if (e.key === "ArrowDown") {
-      setActiveIndex((i) => (i + 1) % suggestions.length);
-      e.preventDefault();
-    } else if (e.key === "ArrowUp") {
-      setActiveIndex((i) => (i <= 0 ? suggestions.length - 1 : i - 1));
-      e.preventDefault();
-    } else if (e.key === "Enter" && activeIndex >= 0) {
-      pickSuggestion(suggestions[activeIndex]);
-      e.preventDefault();
-    } else if (e.key === "Escape") {
-      setSuggestOpen(false);
-      setActiveIndex(-1);
-    }
+  function addEvent(event: EventRow) {
+    setEvents((prev) => (prev.some((x) => x.id === event.id) ? prev : [...prev, event]));
   }
 
   async function handleSubmit(e: React.FormEvent) {
@@ -239,7 +125,6 @@ export default function TicketBoard({ userId }: { userId: string }) {
     if (!name) return;
     setSaving(true);
     setError(null);
-    setSuggestOpen(false);
 
     const isNewEvent = matchedEvent === null;
     const { data, error } = await supabase.rpc("post_ticket", {
@@ -258,7 +143,7 @@ export default function TicketBoard({ userId }: { userId: string }) {
       return;
     }
     const { event, ticket } = data as { event: EventRow; ticket: Ticket };
-    setEvents((prev) => (prev.some((x) => x.id === event.id) ? prev : [...prev, event]));
+    addEvent(event);
     setTickets((prev) => [ticket, ...prev]);
     playOnce(setNewId, ticket.id);
     setEventName("");
@@ -284,161 +169,207 @@ export default function TicketBoard({ userId }: { userId: string }) {
   }
 
   async function deleteTicket(ticket: Ticket, name: string) {
-    if (!window.confirm(`Delete your ticket for "${name}"?`)) return;
+    if (!window.confirm(`Delete your ticket for "${name}"? This can't be undone.`)) return;
     const { error } = await supabase.from("tickets").delete().eq("id", ticket.id);
     if (error) return setError(error.message);
     setTickets((prev) => prev.filter((t) => t.id !== ticket.id));
     setFocusTarget("list");
   }
 
-  // Upcoming events that have tickets, filtered by tab and search, each with its sorted tickets.
-  const groups = useMemo(() => {
+  // "I'm looking for one": add my request, or remove it if I already have one.
+  async function toggleLooking(event: EventRow, mine: RequestRow | undefined) {
+    const setPending = (on: boolean) =>
+      setPendingLooking((prev) => {
+        const next = new Set(prev);
+        if (on) next.add(event.id);
+        else next.delete(event.id);
+        return next;
+      });
+    setPending(true);
+    setError(null);
+    const buttonId = `looking-${event.id}`;
+
+    if (mine) {
+      const { error } = await supabase.from("requests").delete().eq("id", mine.id);
+      setPending(false);
+      if (error) {
+        setError(error.message);
+        setFocusTarget(buttonId);
+        return;
+      }
+      setRequests((prev) => prev.filter((r) => r.id !== mine.id));
+    } else {
+      const { data, error } = await supabase
+        .from("requests")
+        .insert({ event_id: event.id, user_id: userId, contact: lookingContact[event.id]?.trim() || null })
+        .select()
+        .single();
+      setPending(false);
+      if (error) {
+        setError(error.code === "23505" ? "You're already looking for a ticket for this event." : error.message);
+        setFocusTarget(buttonId);
+        return;
+      }
+      setRequests((prev) => [data as RequestRow, ...prev]);
+      setContactOpenFor(null);
+      setLookingContact((prev) => ({ ...prev, [event.id]: "" }));
+    }
+    // Removing the last request of an event without tickets removes the event from the list.
+    const eventStaysListed =
+      !mine ||
+      tickets.some((t) => t.event_id === event.id) ||
+      requests.some((r) => r.event_id === event.id && r.id !== mine.id);
+    setFocusTarget(eventStaysListed ? buttonId : "list");
+  }
+
+  function handleRequestAdded(event: EventRow, request: RequestRow) {
+    addEvent(event);
+    setRequests((prev) => (prev.some((r) => r.id === request.id) ? prev : [request, ...prev]));
+  }
+
+  // Upcoming events with tickets or requests, filtered by tab and search, grouped by time.
+  const sections = useMemo(() => {
     const q = search.trim().toLowerCase();
-    return upcomingEvents
+    const groups = upcomingEvents
       .filter((e) => tab === "All" || e.category === tab)
       .filter((e) => !q || e.name.toLowerCase().includes(q))
       .map((event) => ({
         event,
         tickets: tickets.filter((t) => t.event_id === event.id).sort(compareTickets),
+        requests: requests.filter((r) => r.event_id === event.id),
       }))
-      .filter((g) => g.tickets.length > 0);
-  }, [upcomingEvents, tickets, tab, search]);
+      .filter((g) => g.tickets.length > 0 || g.requests.length > 0);
+    return TIME_SECTIONS.map((name) => ({
+      name,
+      groups: groups.filter((g) => timeSection(g.event.event_date, today, weekEnd) === name),
+    })).filter((s) => s.groups.length > 0);
+  }, [upcomingEvents, tickets, requests, tab, search, today, weekEnd]);
 
   const hasAnyListing = useMemo(
-    () => upcomingEvents.some((e) => tickets.some((t) => t.event_id === e.id)),
-    [upcomingEvents, tickets]
+    () =>
+      upcomingEvents.some(
+        (e) => tickets.some((t) => t.event_id === e.id) || requests.some((r) => r.event_id === e.id)
+      ),
+    [upcomingEvents, tickets, requests]
   );
 
   return (
     <div className="board">
-      <form onSubmit={handleSubmit} className="sell-form">
-        <h1 className="sell-heading">Sell a ticket</h1>
-        <label htmlFor="event-name" className="label">
-          Which event?
-        </label>
-        <div className="sell-row">
-          <div className="combo">
-            <input
+      <div className="sell-area">
+        <form onSubmit={handleSubmit} className="sell-form">
+          <h1 className="sell-heading">Sell a ticket</h1>
+          <label htmlFor="event-name" className="label">
+            Which event?
+          </label>
+          <div className="sell-row">
+            <EventNameField
               id="event-name"
-              type="text"
-              required
-              maxLength={140}
-              autoComplete="off"
-              role="combobox"
-              aria-autocomplete="list"
-              aria-expanded={showSuggestions}
-              aria-controls={listboxId}
-              aria-activedescendant={
-                showSuggestions && activeIndex >= 0 ? `${listboxId}-${activeIndex}` : undefined
-              }
               value={eventName}
-              onChange={(e) => {
-                setEventName(e.target.value);
+              onChange={(v) => {
+                setEventName(v);
                 setPickedEventId(null);
-                setSuggestOpen(true);
-                setActiveIndex(-1);
               }}
-              onFocus={() => setSuggestOpen(true)}
-              onBlur={() => {
-                setSuggestOpen(false);
-                setActiveIndex(-1);
+              onPick={(event) => {
+                setEventName(event.name);
+                setPickedEventId(event.id);
               }}
-              onKeyDown={handleEventKeyDown}
+              upcomingEvents={upcomingEvents}
               placeholder="e.g. Thursday party at Kapital"
-              data-testid="core-input"
+              testId="core-input"
             />
-            <ul
-              id={listboxId}
-              role="listbox"
-              aria-label="Upcoming events"
-              className="suggestions"
-              hidden={!showSuggestions}
-            >
-              {suggestions.map((s, i) => (
-                <li
-                  key={s.id}
-                  id={`${listboxId}-${i}`}
-                  role="option"
-                  aria-selected={i === activeIndex}
-                  className={`suggestion ${i === activeIndex ? "suggestion-active" : ""}`}
-                  // Keep focus in the input so the click lands before blur closes the list.
-                  onMouseDown={(e) => e.preventDefault()}
-                  onClick={() => pickSuggestion(s)}
-                >
-                  <span className="suggestion-name">{s.name}</span>
-                  <span>{formatDate(s.event_date)}</span>
-                </li>
-              ))}
-            </ul>
+            <button type="submit" className="btn btn-primary" disabled={saving} data-testid="core-submit">
+              {saving ? "Posting…" : "Post ticket"}
+            </button>
           </div>
-          <button type="submit" className="btn btn-primary" disabled={saving} data-testid="core-submit">
-            {saving ? "Posting…" : "Post ticket"}
-          </button>
-        </div>
-        <p className="match-note" role="status">
-          {matchedEvent ? `Adding to ${matchedEvent.name}, ${formatDate(matchedEvent.event_date)}.` : ""}
-        </p>
-
-        <details className="details">
-          <summary>Add details</summary>
-          <div className="form-grid">
-            <label className="field">
-              <span className="label">Price (€)</span>
-              <input
-                type="number"
-                inputMode="decimal"
-                min="0"
-                step="0.01"
-                value={price}
-                onChange={(e) => setPrice(e.target.value)}
-                placeholder="Optional"
-              />
-            </label>
-            <label className="field">
-              <span className="label">What you paid (€)</span>
-              <input
-                type="number"
-                inputMode="decimal"
-                min="0"
-                step="0.01"
-                value={paidPrice}
-                onChange={(e) => setPaidPrice(e.target.value)}
-                placeholder="Optional"
-              />
-            </label>
-            <label className="field field-wide">
-              <span className="label">How to reach you</span>
-              <input
-                type="text"
-                maxLength={140}
-                value={contact}
-                onChange={(e) => setContact(e.target.value)}
-                placeholder="e.g. Instagram @yourname"
-              />
-            </label>
-            {!matchedEvent && (
+          <div className="match-note" role="status">
+            {matchedEvent && (
               <>
-                <label className="field">
-                  <span className="label">Event date</span>
-                  <input type="date" min={today} value={eventDate} onChange={(e) => setEventDate(e.target.value)} />
-                </label>
-                <label className="field">
-                  <span className="label">Category</span>
-                  <select value={category} onChange={(e) => setCategory(e.target.value as Category)}>
-                    <option value="Events">Events</option>
-                    <option value="Transport">Transport</option>
-                  </select>
-                </label>
+                <p>
+                  Adding to {matchedEvent.name}, {formatDate(matchedEvent.event_date)}.
+                </p>
+                <p className="price-hint">{priceHint(matchedTickets)}</p>
               </>
             )}
           </div>
-        </details>
 
-        <p className="safety-note" role="note">
-          Only sell tickets that can be passed on. Check who you&apos;re buying from, meet in person if
-          you can, and check the ticket before paying.
-        </p>
-      </form>
+          <details className="details">
+            <summary>Add details</summary>
+            <div className="form-grid">
+              <label className="field">
+                <span className="label">Price (€)</span>
+                <input
+                  type="number"
+                  inputMode="decimal"
+                  min="0"
+                  step="0.01"
+                  value={price}
+                  onChange={(e) => setPrice(e.target.value)}
+                  placeholder="Optional"
+                />
+              </label>
+              <label className="field">
+                <span className="label">What you paid (€)</span>
+                <input
+                  type="number"
+                  inputMode="decimal"
+                  min="0"
+                  step="0.01"
+                  value={paidPrice}
+                  onChange={(e) => setPaidPrice(e.target.value)}
+                  placeholder="Optional"
+                />
+              </label>
+              <label className="field field-wide">
+                <span className="label">How to reach you</span>
+                <input
+                  type="text"
+                  maxLength={140}
+                  value={contact}
+                  onChange={(e) => setContact(e.target.value)}
+                  placeholder="e.g. Instagram @yourname"
+                />
+              </label>
+              {!matchedEvent && (
+                <>
+                  <label className="field">
+                    <span className="label">Event date</span>
+                    <input type="date" min={today} value={eventDate} onChange={(e) => setEventDate(e.target.value)} />
+                  </label>
+                  <label className="field">
+                    <span className="label">Category</span>
+                    <select value={category} onChange={(e) => setCategory(e.target.value as Category)}>
+                      <option value="Events">Events</option>
+                      <option value="Transport">Transport</option>
+                    </select>
+                  </label>
+                </>
+              )}
+            </div>
+          </details>
+
+          <p className="safety-note" role="note">
+            Only sell tickets that can be passed on. Check who you&apos;re buying from, meet in person if
+            you can, and check the ticket before paying.
+          </p>
+        </form>
+
+        <div className="request-toggle">
+          <button
+            type="button"
+            className="btn btn-text"
+            aria-expanded={requestFormOpen}
+            aria-controls="request-panel"
+            onClick={() => setRequestFormOpen((open) => !open)}
+          >
+            Looking for a ticket instead?
+          </button>
+        </div>
+        <div id="request-panel" hidden={!requestFormOpen}>
+          {requestFormOpen && (
+            <RequestForm upcomingEvents={upcomingEvents} today={today} onAdded={handleRequestAdded} />
+          )}
+        </div>
+      </div>
 
       {error && (
         <p className="alert alert-error" role="alert">
@@ -478,75 +409,174 @@ export default function TicketBoard({ userId }: { userId: string }) {
         <p className="status-text" role="status">
           {loading
             ? "Loading tickets…"
-            : groups.length === 0
+            : sections.length === 0
               ? hasAnyListing
                 ? "No events match your filters."
                 : "No tickets yet. Post the first one."
               : ""}
         </p>
-        {groups.length > 0 && (
-          <div className="event-list">
-            {groups.map(({ event, tickets: eventTickets }) => (
-              <section key={event.id} className="event" aria-labelledby={`event-${event.id}`}>
-                <header className="event-header">
-                  <h3 id={`event-${event.id}`} className="event-name">
-                    {event.name}
-                  </h3>
-                  <div className="event-meta">
-                    <span className="tag">{event.category}</span>
-                    <span>{formatDate(event.event_date)}</span>
-                  </div>
-                  <p className="event-summary">{summarize(eventTickets)}</p>
-                </header>
-                <ul className="ticket-list">
-                  {eventTickets.map((t) => {
-                    const mine = t.user_id === userId;
-                    const paid = toNumber(t.paid_price);
-                    return (
-                      <TicketCard
-                        key={t.id}
-                        testId="core-item"
-                        headingLevel={null}
-                        title={event.name}
-                        price={formatPrice(toNumber(t.price))}
-                        sold={t.sold}
-                        isNew={t.id === newId}
-                        justSold={t.id === justSoldId}
-                        meta={
+
+        {sections.map((section) => {
+          const sectionId = `section-${section.name.toLowerCase().replace(/\s+/g, "-")}`;
+          return (
+            <section
+              key={section.name}
+              className={`time-section ${section.name === "Today" ? "time-section-today" : ""}`}
+              aria-labelledby={sectionId}
+            >
+              <h3 id={sectionId} className="time-heading">
+                {section.name}
+              </h3>
+              <div className="event-list">
+                {section.groups.map(({ event, tickets: eventTickets, requests: eventRequests }) => {
+                  const myRequest = eventRequests.find((r) => r.user_id === userId);
+                  const contacts = eventRequests.filter((r) => r.contact);
+                  return (
+                    <section key={event.id} className="event" aria-labelledby={`event-${event.id}`}>
+                      <header className="event-header">
+                        <h4 id={`event-${event.id}`} className="event-name">
+                          {event.name}
+                        </h4>
+                        <div className="event-meta">
+                          <span className="tag">{event.category}</span>
+                          <span>{formatDate(event.event_date)}</span>
+                        </div>
+                        {eventTickets.length > 0 ? (
                           <>
-                            {mine && <span className="tag">Your ticket</span>}
-                            {paid !== null && <span>Seller paid {formatEuros(paid)}</span>}
+                            <p className="event-summary">{summarizeTickets(eventTickets)}</p>
+                            {eventRequests.length > 0 && <p>{peopleLooking(eventRequests.length)}</p>}
                           </>
-                        }
-                      >
-                        {t.contact && <p className="ticket-contact">Contact: {t.contact}</p>}
-                        {mine && (
-                          <div className="ticket-actions">
-                            <button
-                              type="button"
-                              id={`toggle-${t.id}`}
-                              className="btn btn-secondary"
-                              onClick={() => toggleSold(t)}
-                            >
-                              {t.sold ? "Mark as available" : "Mark as sold"}
-                            </button>
-                            <button
-                              type="button"
-                              className="btn btn-secondary"
-                              onClick={() => deleteTicket(t, event.name)}
-                            >
-                              Delete
-                            </button>
-                          </div>
+                        ) : (
+                          <p className="event-summary">No tickets yet, {peopleLooking(eventRequests.length)}</p>
                         )}
-                      </TicketCard>
-                    );
-                  })}
-                </ul>
-              </section>
-            ))}
-          </div>
-        )}
+
+                        {!myRequest && contactOpenFor === event.id && (
+                          <label className="field looking-contact" htmlFor={`looking-contact-${event.id}`}>
+                            <span className="label">How to reach you (optional)</span>
+                            <input
+                              id={`looking-contact-${event.id}`}
+                              type="text"
+                              maxLength={140}
+                              value={lookingContact[event.id] ?? ""}
+                              onChange={(e) =>
+                                setLookingContact((prev) => ({ ...prev, [event.id]: e.target.value }))
+                              }
+                              onKeyDown={(e) => {
+                                if (e.key === "Enter") {
+                                  e.preventDefault();
+                                  toggleLooking(event, undefined);
+                                }
+                              }}
+                              placeholder="e.g. Instagram @yourname"
+                              aria-describedby={`looking-contact-hint-${event.id}`}
+                            />
+                            <span className="hint" id={`looking-contact-hint-${event.id}`}>
+                              Sent when you press &ldquo;I&apos;m looking for one&rdquo;.
+                            </span>
+                          </label>
+                        )}
+                        <div className="looking">
+                          <button
+                            type="button"
+                            id={`looking-${event.id}`}
+                            className={`btn btn-secondary looking-button ${myRequest ? "looking-on" : ""}`}
+                            aria-pressed={Boolean(myRequest)}
+                            disabled={pendingLooking.has(event.id)}
+                            onClick={() => toggleLooking(event, myRequest)}
+                          >
+                            I&apos;m looking for one
+                          </button>
+                          {myRequest ? (
+                            <span className="looking-status">
+                              You&apos;re on the list{myRequest.contact ? ` (${myRequest.contact})` : ""}. Click again to
+                              stop.
+                            </span>
+                          ) : (
+                            contactOpenFor !== event.id && (
+                              <button
+                                type="button"
+                                className="btn btn-text"
+                                onClick={() => {
+                                  setContactOpenFor(event.id);
+                                  setFocusTarget(`looking-contact-${event.id}`);
+                                }}
+                              >
+                                Add how to reach you
+                              </button>
+                            )
+                          )}
+                        </div>
+                        {contacts.length > 0 && (
+                          <details className="looking-contacts">
+                            <summary>Contacts of people looking ({contacts.length})</summary>
+                            <ul>
+                              {contacts.map((r) => (
+                                <li key={r.id}>{r.contact}</li>
+                              ))}
+                            </ul>
+                          </details>
+                        )}
+                      </header>
+
+                      {eventTickets.length > 0 && (
+                        <ul className="ticket-list">
+                          {eventTickets.map((t) => {
+                            const mine = t.user_id === userId;
+                            const paid = toNumber(t.paid_price);
+                            return (
+                              <TicketCard
+                                key={t.id}
+                                testId="core-item"
+                                headingLevel={null}
+                                titleSize="small"
+                                title={
+                                  <>
+                                    Ticket for <span className="ticket-event-name">{event.name}</span>
+                                  </>
+                                }
+                                price={formatPrice(toNumber(t.price))}
+                                sold={t.sold}
+                                isNew={t.id === newId}
+                                justSold={t.id === justSoldId}
+                                meta={
+                                  <>
+                                    {mine && <span className="tag">Your ticket</span>}
+                                    {paid !== null && <span>Seller paid {formatEuros(paid)}</span>}
+                                  </>
+                                }
+                              >
+                                {t.contact && <p className="ticket-contact">Contact: {t.contact}</p>}
+                                {mine && (
+                                  <div className="ticket-actions">
+                                    <button
+                                      type="button"
+                                      id={`toggle-${t.id}`}
+                                      className="btn btn-secondary"
+                                      onClick={() => toggleSold(t)}
+                                    >
+                                      {t.sold ? "Mark as available" : "Mark as sold"}
+                                    </button>
+                                    <button
+                                      type="button"
+                                      className="btn btn-text"
+                                      onClick={() => deleteTicket(t, event.name)}
+                                    >
+                                      Delete
+                                    </button>
+                                  </div>
+                                )}
+                              </TicketCard>
+                            );
+                          })}
+                        </ul>
+                      )}
+                    </section>
+                  );
+                })}
+              </div>
+            </section>
+          );
+        })}
       </section>
     </div>
   );
