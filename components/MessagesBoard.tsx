@@ -5,12 +5,14 @@ import Link from "next/link";
 import { useRouter, useSearchParams } from "next/navigation";
 import { createClient } from "@/lib/supabase/client";
 import {
+  displayName,
   formatDate,
   formatDateTime,
   formatPrice,
   toNumber,
   type Conversation,
   type Message,
+  type Profile,
 } from "@/lib/listings";
 
 type ConversationRow = Conversation & {
@@ -45,6 +47,11 @@ export default function MessagesBoard({ userId }: { userId: string }) {
   const [loadError, setLoadError] = useState<string | null>(null);
   const [sendError, setSendError] = useState<string | null>(null);
   const [visible, setVisible] = useState(true);
+  const [profiles, setProfiles] = useState<Map<string, Profile>>(new Map());
+  // Your own first name, editable here for people who skipped it at sign-up.
+  const [myName, setMyName] = useState("");
+  const [nameStatus, setNameStatus] = useState("");
+  const [savingName, setSavingName] = useState(false);
 
   const threadHeadingRef = useRef<HTMLHeadingElement>(null);
   const draftRef = useRef<HTMLTextAreaElement>(null);
@@ -87,6 +94,61 @@ export default function MessagesBoard({ userId }: { userId: string }) {
     },
     [supabase]
   );
+
+  const otherPerson = useCallback(
+    (c: Conversation) => (c.seller_id === userId ? c.buyer_id : c.seller_id),
+    [userId]
+  );
+
+  // First names of everyone you're talking to, plus your own.
+  const counterpartKey = useMemo(
+    () => [...new Set(conversations.map(otherPerson))].sort().join(","),
+    [conversations, otherPerson]
+  );
+  useEffect(() => {
+    const ids = [userId, ...(counterpartKey ? counterpartKey.split(",") : [])];
+    supabase
+      .from("profiles")
+      .select("id, first_name")
+      .in("id", ids)
+      .then(({ data, error }) => {
+        if (error) return; // Names are a nice-to-have; messaging works without them.
+        // People without a profile row haven't given a name: record that, so they show as "Anonymous".
+        const map = new Map<string, Profile>(ids.map((id) => [id, { id, first_name: null }]));
+        for (const p of (data ?? []) as Profile[]) map.set(p.id, p);
+        setProfiles(map);
+      });
+  }, [counterpartKey, supabase, userId]);
+
+  // Fill the name field once your own profile has loaded (without overwriting what you type).
+  const myLoadedName = profiles.get(userId)?.first_name ?? "";
+  const nameTouched = useRef(false);
+  const nameInputRef = useRef<HTMLInputElement>(null);
+  useEffect(() => {
+    if (!nameTouched.current) setMyName(myLoadedName);
+  }, [myLoadedName]);
+
+  async function saveName(e: React.FormEvent) {
+    e.preventDefault();
+    const first_name = myName.trim().slice(0, 40) || null;
+    setSavingName(true);
+    setNameStatus("");
+    // Update your profile, or create it if you signed up before profiles existed.
+    const updated = await supabase.from("profiles").update({ first_name }).eq("id", userId).select("id");
+    let error = updated.error;
+    if (!error && (updated.data ?? []).length === 0) {
+      error = (await supabase.from("profiles").insert({ id: userId, first_name })).error;
+    }
+    setSavingName(false);
+    requestAnimationFrame(() => nameInputRef.current?.focus());
+    if (error) {
+      setNameStatus(`Couldn't save your name: ${error.message}`);
+      return;
+    }
+    nameTouched.current = false;
+    setProfiles((prev) => new Map(prev).set(userId, { id: userId, first_name }));
+    setNameStatus(first_name ? `Saved. People will see you as ${first_name}.` : "Saved. People will see you as Anonymous.");
+  }
 
   // Pause polling while the tab is hidden, so messages aren't marked read unseen.
   useEffect(() => {
@@ -232,13 +294,15 @@ export default function MessagesBoard({ userId }: { userId: string }) {
   }
 
   function counterpart(c: ConversationRow) {
+    const name = displayName(profiles, otherPerson(c));
     if (c.seller_id === userId) {
       const contact = c.request?.contact;
-      return `With someone looking for a ticket${contact ? ` (${contact})` : ""}`;
+      const who = name ? `${name}, who is` : "someone";
+      return `With ${who} looking for a ticket${contact ? ` (${contact})` : ""}`;
     }
     const price = c.ticket ? ` of the ${formatPrice(toNumber(c.ticket.price))} ticket` : "";
     const contact = c.ticket?.contact;
-    return `With the seller${price}${contact ? ` (${contact})` : ""}`;
+    return `With ${name ? `${name}, ` : ""}the seller${price}${contact ? ` (${contact})` : ""}`;
   }
 
   return (
@@ -251,6 +315,37 @@ export default function MessagesBoard({ userId }: { userId: string }) {
       )}
       <div className={`messages ${selected ? "messages-has-thread" : ""}`}>
         <div className="messages-list-pane">
+          <form onSubmit={saveName} className="name-form">
+            <label htmlFor="my-first-name" className="label">
+              Your first name
+            </label>
+            <div className="name-row">
+              <input
+                id="my-first-name"
+                ref={nameInputRef}
+                type="text"
+                maxLength={40}
+                autoComplete="given-name"
+                value={myName}
+                onChange={(e) => {
+                  nameTouched.current = true;
+                  setMyName(e.target.value);
+                }}
+                aria-describedby="my-first-name-hint"
+                placeholder="e.g. Ana"
+              />
+              <button type="submit" className="btn btn-secondary" disabled={savingName}>
+                {savingName ? "Saving…" : "Save"}
+              </button>
+            </div>
+            <span className="hint" id="my-first-name-hint">
+              Shown to everyone logged in to SpareTix, next to your tickets, requests and messages. Without
+              it you appear as &ldquo;Anonymous&rdquo;.
+            </span>
+            <p className="match-note" role="status">
+              {nameStatus}
+            </p>
+          </form>
           <p className="status-text" role="status">
             {loading ? "Loading messages…" : ""}
           </p>
@@ -326,7 +421,7 @@ export default function MessagesBoard({ userId }: { userId: string }) {
                       return (
                         <li key={m.id} className={`message ${mine ? "message-mine" : "message-theirs"}`}>
                           <span className="message-meta">
-                            {mine ? "You" : "Them"} · {formatDateTime(m.created_at)}
+                            {mine ? "You" : (displayName(profiles, m.sender_id) ?? "Them")} · {formatDateTime(m.created_at)}
                           </span>
                           <span className="message-body">{m.body}</span>
                         </li>

@@ -30,6 +30,18 @@ export type RequestRow = {
   created_at: string;
 };
 
+export type Profile = {
+  id: string;
+  first_name: string | null;
+};
+
+// What other people see for a user: their first name, "Anonymous" if they haven't
+// given one, or null while their profile is still loading.
+export function displayName(profiles: Map<string, Profile>, userId: string) {
+  if (!profiles.has(userId)) return null;
+  return profiles.get(userId)?.first_name?.trim() || "Anonymous";
+}
+
 export type Conversation = {
   id: string;
   event_id: string;

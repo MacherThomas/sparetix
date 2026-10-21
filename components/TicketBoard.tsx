@@ -10,6 +10,7 @@ import {
   TIME_SECTIONS,
   compareEvents,
   compareTickets,
+  displayName,
   endOfWeek,
   formatDate,
   formatDay,
@@ -26,6 +27,7 @@ import {
   todayString,
   type Category,
   type EventRow,
+  type Profile,
   type RequestRow,
   type Ticket,
 } from "@/lib/listings";
@@ -38,6 +40,8 @@ export default function TicketBoard({ userId }: { userId: string }) {
   const [events, setEvents] = useState<EventRow[]>([]);
   const [tickets, setTickets] = useState<Ticket[]>([]);
   const [requests, setRequests] = useState<RequestRow[]>([]);
+  // First names of the sellers and people looking that are on screen.
+  const [profiles, setProfiles] = useState<Map<string, Profile>>(new Map());
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
@@ -102,6 +106,26 @@ export default function TicketBoard({ userId }: { userId: string }) {
       setLoading(false);
     });
   }, [supabase]);
+
+  // Load first names for anyone new in the list (one request for all missing ids).
+  useEffect(() => {
+    const ids = new Set([...tickets.map((t) => t.user_id), ...requests.map((r) => r.user_id)]);
+    const missing = [...ids].filter((id) => id !== userId && !profiles.has(id));
+    if (missing.length === 0) return;
+    supabase
+      .from("profiles")
+      .select("id, first_name")
+      .in("id", missing)
+      .then(({ data, error }) => {
+        if (error) return; // Names are a nice-to-have; the list works without them.
+        setProfiles((prev) => {
+          const next = new Map(prev);
+          for (const id of missing) next.set(id, { id, first_name: null });
+          for (const p of (data ?? []) as Profile[]) next.set(p.id, p);
+          return next;
+        });
+      });
+  }, [tickets, requests, profiles, supabase, userId]);
 
   useEffect(() => {
     if (!focusTarget) return;
@@ -547,7 +571,12 @@ export default function TicketBoard({ userId }: { userId: string }) {
                               {eventRequests.map((r) => (
                                 <li key={r.id} className="person">
                                   <span className="person-text">
-                                    {r.user_id === userId ? "You, looking" : "Looking"} since {formatDay(r.created_at)}
+                                    {r.user_id === userId
+                                      ? "You, looking"
+                                      : displayName(profiles, r.user_id)
+                                        ? `${displayName(profiles, r.user_id)}, looking`
+                                        : "Looking"}{" "}
+                                    since {formatDay(r.created_at)}
                                     {r.contact ? (
                                       <>
                                         {" "}
@@ -567,7 +596,8 @@ export default function TicketBoard({ userId }: { userId: string }) {
                                       {startingChat === r.id ? "Opening…" : "Message"}
                                       <span className="visually-hidden">
                                         {" "}
-                                        the person looking since {formatDay(r.created_at)}
+                                        {displayName(profiles, r.user_id) ?? "the person"} looking since{" "}
+                                        {formatDay(r.created_at)}
                                       </span>
                                     </button>
                                   )}
@@ -606,7 +636,13 @@ export default function TicketBoard({ userId }: { userId: string }) {
                                 justSold={t.id === justSoldId}
                                 meta={
                                   <>
-                                    {mine && <span className="tag">Your ticket</span>}
+                                    {mine ? (
+                                      <span className="tag">Your ticket</span>
+                                    ) : (
+                                      displayName(profiles, t.user_id) && (
+                                        <span>Sold by {displayName(profiles, t.user_id)}</span>
+                                      )
+                                    )}
                                     {paid !== null && <span>Seller paid {formatEuros(paid)}</span>}
                                   </>
                                 }

@@ -288,6 +288,11 @@ input::placeholder {
   overflow-wrap: anywhere;
 }
 
+.ticket-meta > * {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
 .ticket-meta {
   display: flex;
   flex-wrap: wrap;
@@ -1167,4 +1172,23 @@ textarea::placeholder {
 
 .seller-hint {
   margin-top: 4px;
+}
+
+/* "Your first name" on the Messages page */
+.name-form {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-bottom: 16px;
+  padding-bottom: 16px;
+  border-bottom: 2px dotted var(--perforation);
+}
+
+.name-row {
+  display: flex;
+  gap: 8px;
+}
+
+.name-row input {
+  flex: 1;
 }

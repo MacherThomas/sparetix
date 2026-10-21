@@ -7,6 +7,7 @@ import { createClient } from "@/lib/supabase/client";
 
 export default function AuthForm({ mode }: { mode: "signup" | "login" }) {
   const router = useRouter();
+  const [firstName, setFirstName] = useState("");
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [error, setError] = useState<string | null>(null);
@@ -22,7 +23,13 @@ export default function AuthForm({ mode }: { mode: "signup" | "login" }) {
     const supabase = createClient();
 
     if (isSignup) {
-      const { data, error } = await supabase.auth.signUp({ email, password });
+      // The first name is saved to the user's profile by a database trigger.
+      const name = firstName.trim().slice(0, 40);
+      const { data, error } = await supabase.auth.signUp({
+        email,
+        password,
+        options: name ? { data: { first_name: name } } : undefined,
+      });
       if (error) {
         setError(error.message);
         setLoading(false);
@@ -54,8 +61,28 @@ export default function AuthForm({ mode }: { mode: "signup" | "login" }) {
         {isSignup ? "Start buying and selling spare tickets." : "Log in to see the latest tickets."}
       </p>
       <form onSubmit={handleSubmit} className="stack">
+        {/* Optional on purpose: sign-up must work with only email and password (see CLAUDE.md). */}
+        {isSignup && (
+          <div className="field">
+            <label htmlFor="signup-first-name" className="label">
+              First name
+            </label>
+            <input
+              id="signup-first-name"
+              type="text"
+              maxLength={40}
+              autoComplete="given-name"
+              value={firstName}
+              onChange={(e) => setFirstName(e.target.value)}
+              aria-describedby="first-name-hint"
+            />
+            <span className="hint" id="first-name-hint">
+              Optional. Shown to everyone logged in to SpareTix, next to your tickets, requests and messages.
+            </span>
+          </div>
+        )}
         <label className="field">
-          <span>Email</span>
+          <span className="label">Email</span>
           <input
             type="email"
             required
@@ -66,7 +93,7 @@ export default function AuthForm({ mode }: { mode: "signup" | "login" }) {
           />
         </label>
         <label className="field">
-          <span>Password</span>
+          <span className="label">Password</span>
           <input
             type="password"
             required

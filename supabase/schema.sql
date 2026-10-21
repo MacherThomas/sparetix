@@ -1,5 +1,5 @@
 -- SpareTix database schema: events, their tickets, "looking for" requests,
--- and private messages between sellers and buyers.
+-- first names, and private messages between sellers and buyers.
 -- Paste into Supabase: Dashboard → SQL Editor → New query → Run.
 --
 -- Works on a fresh project and on the old single-table schema: it moves every
@@ -346,6 +346,82 @@ begin
   return jsonb_build_object('event', to_jsonb(v_event), 'request', to_jsonb(v_request), 'created', v_created);
 end;
 $$;
+
+-- ---------------------------------------------------------------------------
+-- Profiles: an optional first name shown to other logged-in users (people
+-- looking, sellers, messages). Nothing else about a user is shared.
+-- ---------------------------------------------------------------------------
+create table if not exists public.profiles (
+  id          uuid primary key references auth.users (id) on delete cascade,
+  first_name  text check (first_name is null or char_length(btrim(first_name)) between 1 and 40),
+  created_at  timestamptz not null default now()
+);
+
+alter table public.profiles enable row level security;
+revoke all on public.profiles from anon;
+revoke all on public.profiles from authenticated;
+-- Only the id and first name are readable (not when someone signed up).
+grant select (id, first_name) on public.profiles to authenticated;
+grant insert (id, first_name) on public.profiles to authenticated;
+grant update (first_name) on public.profiles to authenticated;
+
+drop policy if exists "Logged-in users can read first names" on public.profiles;
+create policy "Logged-in users can read first names"
+  on public.profiles for select
+  to authenticated
+  using (auth.uid() is not null);
+
+drop policy if exists "Users can create their own profile" on public.profiles;
+create policy "Users can create their own profile"
+  on public.profiles for insert
+  to authenticated
+  with check (auth.uid() = id);
+
+drop policy if exists "Users can change their own first name" on public.profiles;
+create policy "Users can change their own first name"
+  on public.profiles for update
+  to authenticated
+  using (auth.uid() = id)
+  with check (auth.uid() = id);
+
+-- Create the profile when someone signs up with a first name. It never blocks
+-- a sign-up: without a name (or with a bad one) no profile is created, and the
+-- person can add their name later on the Messages page.
+create or replace function public.handle_new_user()
+returns trigger
+language plpgsql
+security definer
+set search_path = ''
+as $$
+declare
+  v_name text := nullif(left(btrim(coalesce(new.raw_user_meta_data ->> 'first_name', '')), 40), '');
+begin
+  if v_name is null then
+    return new;
+  end if;
+  begin
+    insert into public.profiles (id, first_name) values (new.id, v_name)
+    on conflict (id) do nothing;
+  exception when others then
+    -- Never fail the sign-up because of the profile.
+    null;
+  end;
+  return new;
+end;
+$$;
+
+revoke all on function public.handle_new_user() from public, anon, authenticated;
+
+create or replace trigger on_auth_user_created
+  after insert on auth.users
+  for each row execute function public.handle_new_user();
+
+-- People who typed a first name at sign-up before this table existed.
+insert into public.profiles (id, first_name)
+select u.id, nullif(left(btrim(coalesce(u.raw_user_meta_data ->> 'first_name', '')), 40), '')
+from auth.users u
+where nullif(left(btrim(coalesce(u.raw_user_meta_data ->> 'first_name', '')), 40), '') is not null
+on conflict (id) do nothing;
 
 -- ---------------------------------------------------------------------------
 -- Messages: private conversations between a seller and a buyer about one event.
