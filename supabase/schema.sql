@@ -1,4 +1,5 @@
--- SpareTix database schema: events, their tickets, and "looking for" requests.
+-- SpareTix database schema: events, their tickets, "looking for" requests,
+-- and private messages between sellers and buyers.
 -- Paste into Supabase: Dashboard → SQL Editor → New query → Run.
 --
 -- Works on a fresh project and on the old single-table schema: it moves every
@@ -346,12 +347,222 @@ begin
 end;
 $$;
 
+-- ---------------------------------------------------------------------------
+-- Messages: private conversations between a seller and a buyer about one event.
+-- A buyer starts one from a seller's ticket; a seller (someone with a ticket
+-- for the event) starts one from a "looking for" request. Only the two people
+-- in a conversation can read it or write in it.
+-- ---------------------------------------------------------------------------
+create table if not exists public.conversations (
+  id          uuid primary key default gen_random_uuid(),
+  event_id    uuid not null references public.events (id) on delete restrict,
+  ticket_id   uuid references public.tickets (id) on delete set null,
+  request_id  uuid references public.requests (id) on delete set null,
+  seller_id   uuid not null references auth.users (id) on delete cascade,
+  buyer_id    uuid not null references auth.users (id) on delete cascade,
+  created_at  timestamptz not null default now(),
+  constraint conversations_two_people check (seller_id <> buyer_id)
+);
+
+-- One conversation per seller and buyer per event.
+create unique index if not exists conversations_pair_key
+  on public.conversations (event_id, seller_id, buyer_id);
+create index if not exists conversations_seller_idx on public.conversations (seller_id);
+create index if not exists conversations_buyer_idx on public.conversations (buyer_id);
+
+create table if not exists public.messages (
+  id               uuid primary key default gen_random_uuid(),
+  conversation_id  uuid not null references public.conversations (id) on delete cascade,
+  sender_id        uuid not null default auth.uid() references auth.users (id) on delete cascade,
+  body             text not null check (
+                     char_length(body) <= 2000 and char_length(btrim(body, E' \t\r\n')) >= 1
+                   ),
+  read_at          timestamptz,
+  created_at       timestamptz not null default now()
+);
+
+create index if not exists messages_conversation_idx on public.messages (conversation_id, created_at);
+
+alter table public.conversations enable row level security;
+alter table public.messages enable row level security;
+
+revoke all on public.conversations from anon;
+revoke all on public.conversations from authenticated;
+grant select on public.conversations to authenticated;
+grant insert (event_id, ticket_id, request_id, seller_id, buyer_id) on public.conversations to authenticated;
+
+revoke all on public.messages from anon;
+revoke all on public.messages from authenticated;
+grant select on public.messages to authenticated;
+-- Senders can't set read_at or timestamps themselves.
+grant insert (conversation_id, sender_id, body) on public.messages to authenticated;
+-- The recipient may only mark messages as read.
+grant update (read_at) on public.messages to authenticated;
+
+drop policy if exists "People in a conversation can read it" on public.conversations;
+create policy "People in a conversation can read it"
+  on public.conversations for select
+  to authenticated
+  using (auth.uid() = seller_id or auth.uid() = buyer_id);
+
+drop policy if exists "Start a conversation from a ticket or a request" on public.conversations;
+create policy "Start a conversation from a ticket or a request"
+  on public.conversations for insert
+  to authenticated
+  with check (
+    (
+      -- A buyer writes to the seller of a ticket for this event.
+      auth.uid() = conversations.buyer_id
+      and conversations.ticket_id is not null
+      and conversations.request_id is null
+      and exists (
+        select 1 from public.tickets t
+        where t.id = conversations.ticket_id
+          and t.user_id = conversations.seller_id
+          and t.event_id = conversations.event_id
+      )
+    )
+    or (
+      -- A seller with a ticket for this event writes to someone looking for one.
+      auth.uid() = conversations.seller_id
+      and conversations.request_id is not null
+      and conversations.ticket_id is null
+      and exists (
+        select 1 from public.requests r
+        where r.id = conversations.request_id
+          and r.user_id = conversations.buyer_id
+          and r.event_id = conversations.event_id
+      )
+      and exists (
+        select 1 from public.tickets t
+        where t.event_id = conversations.event_id and t.user_id = auth.uid()
+      )
+    )
+  );
+
+drop policy if exists "People in a conversation can read its messages" on public.messages;
+create policy "People in a conversation can read its messages"
+  on public.messages for select
+  to authenticated
+  using (
+    exists (
+      select 1 from public.conversations c
+      where c.id = messages.conversation_id
+        and (auth.uid() = c.seller_id or auth.uid() = c.buyer_id)
+    )
+  );
+
+drop policy if exists "People in a conversation can send messages" on public.messages;
+create policy "People in a conversation can send messages"
+  on public.messages for insert
+  to authenticated
+  with check (
+    auth.uid() = messages.sender_id
+    and exists (
+      select 1 from public.conversations c
+      where c.id = messages.conversation_id
+        and (auth.uid() = c.seller_id or auth.uid() = c.buyer_id)
+    )
+  );
+
+drop policy if exists "Recipients can mark messages as read" on public.messages;
+create policy "Recipients can mark messages as read"
+  on public.messages for update
+  to authenticated
+  using (
+    auth.uid() <> messages.sender_id
+    and exists (
+      select 1 from public.conversations c
+      where c.id = messages.conversation_id
+        and (auth.uid() = c.seller_id or auth.uid() = c.buyer_id)
+    )
+  )
+  with check (
+    auth.uid() <> messages.sender_id
+    and exists (
+      select 1 from public.conversations c
+      where c.id = messages.conversation_id
+        and (auth.uid() = c.seller_id or auth.uid() = c.buyer_id)
+    )
+  );
+
+-- ---------------------------------------------------------------------------
+-- start_conversation: open (or reuse) the conversation about a ticket or a
+-- request and return its id. Runs with the caller's rights, so the insert
+-- policy above decides who may start one.
+-- ---------------------------------------------------------------------------
+create or replace function public.start_conversation(
+  p_ticket_id  uuid default null,
+  p_request_id uuid default null
+)
+returns uuid
+language plpgsql
+security invoker
+set search_path = public
+as $$
+declare
+  v_event_id   uuid;
+  v_seller_id  uuid;
+  v_buyer_id   uuid;
+  v_id         uuid;
+begin
+  if auth.uid() is null then
+    raise exception 'You need to be logged in.' using errcode = '42501';
+  end if;
+
+  if p_ticket_id is not null then
+    select event_id, user_id into v_event_id, v_seller_id from public.tickets where id = p_ticket_id;
+    if v_event_id is null then
+      raise exception 'This ticket is no longer listed.' using errcode = '22023';
+    end if;
+    v_buyer_id := auth.uid();
+  elsif p_request_id is not null then
+    select event_id, user_id into v_event_id, v_buyer_id from public.requests where id = p_request_id;
+    if v_event_id is null then
+      raise exception 'This person is no longer looking.' using errcode = '22023';
+    end if;
+    v_seller_id := auth.uid();
+    if not exists (
+      select 1 from public.tickets where event_id = v_event_id and user_id = auth.uid()
+    ) then
+      raise exception 'Post a ticket for this event first to message people looking.' using errcode = '42501';
+    end if;
+  else
+    raise exception 'Choose a ticket or a request to reply to.' using errcode = '22023';
+  end if;
+
+  if v_seller_id = v_buyer_id then
+    raise exception 'That is your own listing.' using errcode = '22023';
+  end if;
+
+  select id into v_id from public.conversations
+  where event_id = v_event_id and seller_id = v_seller_id and buyer_id = v_buyer_id;
+
+  if v_id is null then
+    insert into public.conversations (event_id, ticket_id, request_id, seller_id, buyer_id)
+    values (v_event_id, p_ticket_id, p_request_id, v_seller_id, v_buyer_id)
+    on conflict do nothing
+    returning id into v_id;
+
+    -- Opened by the other person at the same moment: use that one.
+    if v_id is null then
+      select id into v_id from public.conversations
+      where event_id = v_event_id and seller_id = v_seller_id and buyer_id = v_buyer_id;
+    end if;
+  end if;
+
+  return v_id;
+end;
+$$;
+
 revoke all on function public.find_or_create_event(text, uuid, date, text) from public, anon;
 grant execute on function public.find_or_create_event(text, uuid, date, text) to authenticated;
 revoke all on function public.post_ticket(text, uuid, date, text, numeric, numeric, text) from public, anon;
 grant execute on function public.post_ticket(text, uuid, date, text, numeric, numeric, text) to authenticated;
 revoke all on function public.post_request(text, uuid, date, text, text) from public, anon;
 grant execute on function public.post_request(text, uuid, date, text, text) to authenticated;
+revoke all on function public.start_conversation(uuid, uuid) from public, anon;
+grant execute on function public.start_conversation(uuid, uuid) to authenticated;
 
 commit;
 

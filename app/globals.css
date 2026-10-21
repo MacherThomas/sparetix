@@ -41,7 +41,8 @@ a {
 h1,
 h2,
 h3,
-h4 {
+h4,
+h5 {
   line-height: 1.15;
   margin: 0;
 }
@@ -69,7 +70,7 @@ p {
 
 .container {
   width: 100%;
-  max-width: 960px;
+  max-width: 880px;
   margin: 0 auto;
   padding: 0 16px;
 }
@@ -87,10 +88,12 @@ main.container {
 
 .header-inner {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
   justify-content: space-between;
-  gap: 12px;
+  gap: 4px 12px;
   min-height: 64px;
+  padding-block: 8px;
 }
 
 .brand {
@@ -102,9 +105,24 @@ main.container {
 
 .header-nav {
   display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
   align-items: center;
-  gap: 12px;
+  gap: 4px 12px;
   min-width: 0;
+  margin-left: auto;
+}
+
+@media (max-width: 400px) {
+  .header-nav {
+    column-gap: 4px;
+  }
+  .header-nav .btn {
+    padding-inline: 12px;
+  }
+  .header-link {
+    padding-inline: 4px;
+  }
 }
 
 /* Buttons */
@@ -411,10 +429,13 @@ input::placeholder {
 }
 
 /* Landing */
+/* One centered column; on wide screens the hero splits into two. */
 .landing {
   display: flex;
   flex-direction: column;
   gap: 40px;
+  max-width: 600px;
+  margin-inline: auto;
 }
 
 .hero {
@@ -424,7 +445,6 @@ input::placeholder {
 }
 
 .hero-text {
-  max-width: 600px;
   display: flex;
   flex-direction: column;
   align-items: flex-start;
@@ -433,11 +453,19 @@ input::placeholder {
 
 /* Wide screens: example ticket beside the headline, visible without scrolling. */
 @media (min-width: 901px) {
+  .landing {
+    max-width: none;
+  }
   .hero {
     display: grid;
     grid-template-columns: minmax(0, 1.25fr) minmax(0, 1fr);
     align-items: center;
     gap: 48px;
+  }
+  .features {
+    display: grid;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    gap: 0 32px;
   }
 }
 
@@ -466,7 +494,6 @@ input::placeholder {
 
 .features {
   width: 100%;
-  max-width: 600px;
   list-style: none;
   margin: 0;
   padding: 0;
@@ -483,6 +510,7 @@ input::placeholder {
 /* Auth */
 .auth-card {
   max-width: 420px;
+  margin-inline: auto;
 }
 
 .auth-card h1 {
@@ -499,17 +527,19 @@ input::placeholder {
 }
 
 /* App board */
+/* /app: one centered column; tickets use two columns inside it on wide screens. */
 .board {
   display: flex;
   flex-direction: column;
   gap: 28px;
+  max-width: 720px;
+  margin-inline: auto;
 }
 
 .sell-form {
   display: flex;
   flex-direction: column;
   gap: 8px;
-  max-width: 640px;
 }
 
 .sell-heading {
@@ -632,7 +662,6 @@ input::placeholder {
   margin-top: 6px;
   padding-left: 12px;
   border-left: 3px dotted var(--perforation);
-  max-width: 560px;
 }
 
 .toolbar {
@@ -669,7 +698,7 @@ input::placeholder {
 }
 
 .toolbar-search {
-  max-width: 480px;
+  width: 100%;
 }
 
 .status-text:not(:empty) {
@@ -752,7 +781,6 @@ input::placeholder {
   display: flex;
   flex-direction: column;
   gap: 8px;
-  max-width: 640px;
   padding-top: 16px;
   border-top: 2px dotted var(--perforation);
 }
@@ -851,4 +879,292 @@ input::placeholder {
 .looking .btn-text {
   padding-left: 0;
   padding-right: 0;
+}
+
+/* Header link to Messages with an unread count */
+.header-link {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 44px;
+  padding: 0 8px;
+  color: var(--ink);
+  font-weight: 600;
+  text-decoration: underline;
+  text-underline-offset: 3px;
+}
+
+.unread-badge {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 26px;
+  padding: 0 8px;
+  border: 2px solid var(--ink);
+  border-radius: 999px;
+  background: var(--ticket);
+  color: var(--ink);
+  font-weight: 700;
+  line-height: 1.4;
+}
+
+.btn-small {
+  padding: 6px 14px;
+}
+
+/* People looking (shown to sellers) */
+.people-looking {
+  margin-top: 10px;
+  padding: 14px 16px;
+  border: 2px dotted var(--perforation);
+  border-radius: var(--radius);
+}
+
+.people-looking-heading {
+  font-size: 1rem;
+  font-weight: 700;
+  margin-bottom: 6px;
+}
+
+.people-looking-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.person {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 6px 12px;
+  padding: 8px 0;
+}
+
+.person + .person {
+  border-top: 1px solid var(--perforation);
+}
+
+.person-text {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.person-contact {
+  font-weight: 600;
+}
+
+/* Messages page */
+.messages-page {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.messages {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 28px;
+}
+
+@media (min-width: 860px) {
+  .messages {
+    grid-template-columns: 300px minmax(0, 1fr);
+    align-items: start;
+  }
+  .thread-back {
+    display: none;
+  }
+}
+
+/* Phones: show either the list or the open conversation. */
+@media (max-width: 859px) {
+  .messages-has-thread .messages-list-pane {
+    display: none;
+  }
+  .messages:not(.messages-has-thread) .thread-pane {
+    display: none;
+  }
+}
+
+.empty-note {
+  margin-top: 8px;
+}
+
+.conversation-list {
+  list-style: none;
+  margin: 12px 0 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.conversation {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 2px;
+  width: 100%;
+  min-height: 44px;
+  padding: 12px 14px;
+  border: 2px solid var(--perforation);
+  border-radius: var(--radius);
+  background: var(--paper);
+  color: var(--ink);
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.conversation:hover {
+  border-color: var(--ink);
+}
+
+.conversation-active {
+  border-color: var(--ink);
+  background: var(--ticket);
+}
+
+.conversation-event {
+  font-weight: 700;
+}
+
+.conversation > span {
+  max-width: 100%;
+  overflow-wrap: anywhere;
+}
+
+.conversation-preview {
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.conversation .unread-badge {
+  margin-top: 4px;
+}
+
+.thread-pane {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  min-width: 0;
+}
+
+.thread-back {
+  align-self: flex-start;
+  padding-left: 0;
+}
+
+.thread-header {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding-bottom: 12px;
+  border-bottom: 2px dotted var(--perforation);
+}
+
+.thread-title {
+  font-family: var(--font-display), "Arial Narrow", sans-serif;
+  font-variation-settings: "opsz" 72;
+  font-weight: 800;
+  font-size: 2rem;
+  line-height: 1.05;
+  overflow-wrap: anywhere;
+}
+
+/* Scrollable and focusable, so keyboard users can read older messages. */
+.message-log {
+  max-height: 55vh;
+  overflow-y: auto;
+  padding: 4px;
+  border-radius: var(--radius);
+}
+
+.message-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.message {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  max-width: 85%;
+  padding: 10px 14px;
+  border-radius: var(--radius);
+  overflow-wrap: anywhere;
+  white-space: pre-wrap;
+}
+
+.message-mine {
+  align-self: flex-end;
+  background: var(--ticket);
+}
+
+.message-theirs {
+  align-self: flex-start;
+  border: 2px solid var(--perforation);
+}
+
+.message-meta {
+  font-weight: 600;
+  white-space: normal;
+}
+
+.message-empty {
+  padding: 12px 0;
+}
+
+.composer {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+textarea {
+  width: 100%;
+  min-height: 88px;
+  padding: 10px 12px;
+  border: 1px solid var(--perforation);
+  border-radius: 10px;
+  background: var(--paper);
+  color: var(--ink);
+  font: inherit;
+  resize: vertical;
+}
+
+textarea::placeholder {
+  color: var(--ink);
+  opacity: 0.75;
+}
+
+.composer-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px 16px;
+}
+
+.messages-error {
+  grid-column: 1 / -1;
+}
+
+.thread-placeholder {
+  padding: 24px 0;
+}
+
+.chat-error {
+  flex-basis: 100%;
+}
+
+.seller-hint {
+  margin-top: 4px;
 }

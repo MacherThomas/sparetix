@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useMemo, useRef, useState } from "react";
+import { useRouter } from "next/navigation";
 import { createClient } from "@/lib/supabase/client";
 import EventNameField from "./EventNameField";
 import RequestForm from "./RequestForm";
@@ -11,6 +12,7 @@ import {
   compareTickets,
   endOfWeek,
   formatDate,
+  formatDay,
   formatEuros,
   formatPrice,
   matchEvent,
@@ -32,6 +34,7 @@ type Tab = "All" | Category;
 
 export default function TicketBoard({ userId }: { userId: string }) {
   const supabase = useMemo(() => createClient(), []);
+  const router = useRouter();
   const [events, setEvents] = useState<EventRow[]>([]);
   const [tickets, setTickets] = useState<Ticket[]>([]);
   const [requests, setRequests] = useState<RequestRow[]>([]);
@@ -52,6 +55,10 @@ export default function TicketBoard({ userId }: { userId: string }) {
   const [lookingContact, setLookingContact] = useState<Record<string, string>>({});
   const [contactOpenFor, setContactOpenFor] = useState<string | null>(null);
   const [pendingLooking, setPendingLooking] = useState<Set<string>>(new Set());
+
+  // The ticket or request a conversation is being opened for, and any error, shown next to its button.
+  const [startingChat, setStartingChat] = useState<string | null>(null);
+  const [chatError, setChatError] = useState<{ key: string; message: string } | null>(null);
 
   const [tab, setTab] = useState<Tab>("All");
   const [search, setSearch] = useState("");
@@ -220,6 +227,32 @@ export default function TicketBoard({ userId }: { userId: string }) {
       tickets.some((t) => t.event_id === event.id) ||
       requests.some((r) => r.event_id === event.id && r.id !== mine.id);
     setFocusTarget(eventStaysListed ? buttonId : "list");
+  }
+
+  // Open (or reuse) a private conversation about a ticket or a request, then go to it.
+  async function startConversation(target: { ticketId?: string; requestId?: string }) {
+    const key = target.ticketId ?? target.requestId ?? "";
+    setStartingChat(key);
+    setChatError(null);
+    const { data, error } = await supabase.rpc("start_conversation", {
+      p_ticket_id: target.ticketId ?? null,
+      p_request_id: target.requestId ?? null,
+    });
+    if (error) {
+      setStartingChat(null);
+      setChatError({ key, message: error.message });
+      return;
+    }
+    // Keep "Opening…" until the Messages page takes over.
+    router.push(`/app/messages?c=${data as string}`);
+  }
+
+  function chatErrorFor(key: string) {
+    return chatError?.key === key ? (
+      <p className="alert alert-error chat-error" role="alert">
+        {chatError.message}
+      </p>
+    ) : null;
   }
 
   function handleRequestAdded(event: EventRow, request: RequestRow) {
@@ -430,7 +463,8 @@ export default function TicketBoard({ userId }: { userId: string }) {
               <div className="event-list">
                 {section.groups.map(({ event, tickets: eventTickets, requests: eventRequests }) => {
                   const myRequest = eventRequests.find((r) => r.user_id === userId);
-                  const contacts = eventRequests.filter((r) => r.contact);
+                  // Everyone sees who is looking; sellers (anyone with a ticket for this event) can message them.
+                  const iSell = eventTickets.some((t) => t.user_id === userId);
                   return (
                     <section key={event.id} className="event" aria-labelledby={`event-${event.id}`}>
                       <header className="event-header">
@@ -506,15 +540,47 @@ export default function TicketBoard({ userId }: { userId: string }) {
                             )
                           )}
                         </div>
-                        {contacts.length > 0 && (
-                          <details className="looking-contacts">
-                            <summary>Contacts of people looking ({contacts.length})</summary>
-                            <ul>
-                              {contacts.map((r) => (
-                                <li key={r.id}>{r.contact}</li>
+                        {eventRequests.length > 0 && (
+                          <div className="people-looking">
+                            <h5 className="people-looking-heading">People looking for this event</h5>
+                            <ul className="people-looking-list">
+                              {eventRequests.map((r) => (
+                                <li key={r.id} className="person">
+                                  <span className="person-text">
+                                    {r.user_id === userId ? "You, looking" : "Looking"} since {formatDay(r.created_at)}
+                                    {r.contact ? (
+                                      <>
+                                        {" "}
+                                        · <span className="person-contact">{r.contact}</span>
+                                      </>
+                                    ) : (
+                                      " · no contact given"
+                                    )}
+                                  </span>
+                                  {iSell && r.user_id !== userId && (
+                                    <button
+                                      type="button"
+                                      className="btn btn-secondary btn-small"
+                                      disabled={startingChat === r.id}
+                                      onClick={() => startConversation({ requestId: r.id })}
+                                    >
+                                      {startingChat === r.id ? "Opening…" : "Message"}
+                                      <span className="visually-hidden">
+                                        {" "}
+                                        the person looking since {formatDay(r.created_at)}
+                                      </span>
+                                    </button>
+                                  )}
+                                  {chatErrorFor(r.id)}
+                                </li>
                               ))}
                             </ul>
-                          </details>
+                            {!iSell && eventRequests.some((r) => r.user_id !== userId) && (
+                              <p className="hint seller-hint">
+                                Have a ticket for this event? Post it above to message them here.
+                              </p>
+                            )}
+                          </div>
                         )}
                       </header>
 
@@ -546,6 +612,23 @@ export default function TicketBoard({ userId }: { userId: string }) {
                                 }
                               >
                                 {t.contact && <p className="ticket-contact">Contact: {t.contact}</p>}
+                                {!mine && !t.sold && (
+                                  <div className="ticket-actions">
+                                    <button
+                                      type="button"
+                                      className="btn btn-secondary"
+                                      disabled={startingChat === t.id}
+                                      onClick={() => startConversation({ ticketId: t.id })}
+                                    >
+                                      {startingChat === t.id ? "Opening…" : "Message seller"}
+                                      <span className="visually-hidden">
+                                        {" "}
+                                        of the {formatPrice(toNumber(t.price))} ticket
+                                      </span>
+                                    </button>
+                                    {chatErrorFor(t.id)}
+                                  </div>
+                                )}
                                 {mine && (
                                   <div className="ticket-actions">
                                     <button

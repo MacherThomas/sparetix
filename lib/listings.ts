@@ -30,6 +30,25 @@ export type RequestRow = {
   created_at: string;
 };
 
+export type Conversation = {
+  id: string;
+  event_id: string;
+  ticket_id: string | null;
+  request_id: string | null;
+  seller_id: string;
+  buyer_id: string;
+  created_at: string;
+};
+
+export type Message = {
+  id: string;
+  conversation_id: string;
+  sender_id: string;
+  body: string;
+  read_at: string | null;
+  created_at: string;
+};
+
 const priceFormat = new Intl.NumberFormat("en-IE", { style: "currency", currency: "EUR" });
 const wholePriceFormat = new Intl.NumberFormat("en-IE", {
   style: "currency",
@@ -55,6 +74,27 @@ export function formatDate(date: string | null) {
     day: "numeric",
     month: "short",
     year: "numeric",
+  });
+}
+
+// "Tue 20 Oct, 18:05" for message times and "looking since" dates, in Madrid time.
+export function formatDateTime(iso: string) {
+  return new Date(iso).toLocaleString("en-GB", {
+    timeZone: "Europe/Madrid",
+    weekday: "short",
+    day: "numeric",
+    month: "short",
+    hour: "2-digit",
+    minute: "2-digit",
+  });
+}
+
+export function formatDay(iso: string) {
+  return new Date(iso).toLocaleDateString("en-GB", {
+    timeZone: "Europe/Madrid",
+    weekday: "short",
+    day: "numeric",
+    month: "short",
   });
 }
 
